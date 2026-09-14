@@ -114,10 +114,11 @@ interface PredatorResponse {
           </div>
         </div>
         <div class="head-actions">
-          <button class="primary" (click)="load()">Refresh</button>
+          <button class="primary" (click)="refreshAll()">Refresh</button>
+          <button *ngIf="!isAdmin" (click)="goToDeposit()">Deposit</button>
           <button (click)="copyShareLink()">{{ shareLabel }}</button>
           <button *ngIf="isAdmin" (click)="router.navigate(['/admin'])">Admin</button>
-          <button (click)="router.navigate(['/'])">Game</button>
+          <button *ngIf="isAdmin" (click)="router.navigate(['/'])">Game</button>
         </div>
       </header>
 
@@ -263,6 +264,7 @@ export class PredatorComponent implements OnInit, OnDestroy {
   private readonly cdr = inject(ChangeDetectorRef);
   private readonly gameSocket = inject(GameSocketService);
   private refreshTimer: ReturnType<typeof setInterval> | null = null;
+  private catalogueTimer: ReturnType<typeof setInterval> | null = null;
   private readonly subscriptions = new Subscription();
   private requestInFlight = false;
   private refreshQueued = false;
@@ -329,6 +331,7 @@ export class PredatorComponent implements OnInit, OnDestroy {
 
   ngOnDestroy(): void {
     if (this.refreshTimer) clearInterval(this.refreshTimer);
+    if (this.catalogueTimer) clearInterval(this.catalogueTimer);
     if (this.shareLabelTimer) clearTimeout(this.shareLabelTimer);
     this.subscriptions.unsubscribe();
     this.gameSocket.disconnect();
@@ -407,8 +410,28 @@ export class PredatorComponent implements OnInit, OnDestroy {
     return !this.isAdmin && !site.unlocked && site.available && this.balance < Number(site.priceKes || 0);
   }
 
+  /**
+   * Open the wallet's deposit tab. The wallet reads this key when its BACK
+   * button is pressed, which is how every other screen in the app hands it a
+   * return address, so the player comes back to Predator rather than the game.
+   */
   goToDeposit(): void {
-    this.router.navigate(['/deposit']);
+    try {
+      localStorage.setItem('walletReturnUrl', '/predator');
+    } catch {
+      // Private browsing can refuse storage; the state below still carries it.
+    }
+    this.router.navigate(['/deposit'], { state: { returnUrl: '/predator' } });
+  }
+
+  /**
+   * Manual refresh. The catalogue is pulled as well as the board: an
+   * administrator putting a site on sale must reach a player who already has
+   * this page open, otherwise it keeps reading "Coming soon".
+   */
+  refreshAll(): void {
+    this.load();
+    this.loadSites();
   }
 
   /** Buy a package with wallet balance. */
@@ -532,6 +555,9 @@ export class PredatorComponent implements OnInit, OnDestroy {
     this.load();
     this.loadSites();
     this.refreshTimer = setInterval(() => this.load(), 1500);
+    // Prices and availability change far less often than the round does, so
+    // the catalogue gets its own slower poll rather than riding the 1.5s one.
+    this.catalogueTimer = setInterval(() => this.loadSites(), 10000);
     this.gameSocket.connect(token);
     this.subscriptions.add(this.gameSocket.roundState$.subscribe(state => {
       const roundKey = `${state.roundId || ''}:${state.phase}`;
