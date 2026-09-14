@@ -81,8 +81,11 @@ interface PredatorResponse {
     .shop-head{align-items:center;display:flex;justify-content:space-between;gap:10px;margin-bottom:6px}
     .shop-head .balance{background:rgba(34,197,94,.14);border-radius:999px;color:#86efac;font-size:12px;font-weight:800;padding:5px 10px}
     .site{align-items:center;border-top:1px solid rgba(255,255,255,.07);display:flex;gap:12px;padding:13px 0}
-    .site-logo{align-items:center;border-radius:11px;color:#fff;display:flex;flex:0 0 42px;font-size:11px;font-weight:900;height:42px;justify-content:center;letter-spacing:.5px;overflow:hidden;text-shadow:0 1px 2px rgba(0,0,0,.35);width:42px}
-    .site-logo img{height:100%;object-fit:cover;width:100%}
+    .site-logo{align-items:center;border-radius:11px;color:#fff;display:flex;flex:0 0 48px;font-size:11px;font-weight:900;height:48px;justify-content:center;letter-spacing:.5px;overflow:hidden;text-shadow:0 1px 2px rgba(0,0,0,.35);width:48px}
+    /* The supplied artwork is a wordmark on white with generous padding.
+       Shown whole on a white tile it reads; cropped to fill, it does not. */
+    .site-logo.has-art{background:#fff;padding:3px}
+    .site-logo img{height:100%;object-fit:contain;width:100%}
     .site-copy{display:grid;flex:1 1 auto;gap:2px;min-width:0}
     .site-copy strong{font-size:14px}
     .site-copy span{color:#94a3b8;font-size:12px;overflow:hidden;text-overflow:ellipsis}
@@ -172,7 +175,7 @@ interface PredatorResponse {
           </div>
 
           <div class="site" *ngFor="let site of sites">
-            <span class="site-logo" [style.background]="site.logoUrl ? 'transparent' : site.accent">
+            <span class="site-logo" [class.has-art]="!!site.logoUrl" [style.background]="site.logoUrl ? null : site.accent">
               <img *ngIf="site.logoUrl" [src]="site.logoUrl" [alt]="site.name" (error)="onLogoError(site)">
               <ng-container *ngIf="!site.logoUrl">{{ initials(site.name) }}</ng-container>
             </span>
