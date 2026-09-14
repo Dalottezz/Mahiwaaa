@@ -5,6 +5,7 @@ const bcrypt = require('bcryptjs');
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { Server } = require('socket.io');
 require('dotenv').config();
 const mongodb = require('./mongodb');
@@ -394,6 +395,18 @@ app.use((req, res, next) => {
 const users = new Map();
 const wallets = new Map();
 const transactions = [];
+// Predator access tokens. An administrator generates one, hands the code to a
+// player, and the player redeems it to unlock the crash signals for a fixed
+// window. The token record is the single source of truth for a subscription:
+// who holds it and when it lapses, so revoking the token revokes the access.
+let predatorTokens = [];
+// The predictor catalogue. Betzion ships as a built-in entry; further sites are
+// added by an administrator, who also sets each price and whether it is on sale
+// yet. A site that is not available is advertised but cannot be bought.
+let predatorSites = [];
+// Subscriptions bought with wallet balance, kept apart from the token ledger so
+// an issued code and a paid purchase can both grant the same access.
+let predatorSubscriptions = [];
 let siteSettings = {};
 let storeWriteQueue = Promise.resolve();
 let canonicalRestoreState = null;
@@ -481,6 +494,9 @@ function saveLocalSnapshot() {
     transactions,
     gameSettings,
     withdrawalPopupSettings,
+    predatorTokens,
+    predatorSites,
+    predatorSubscriptions,
   }, null, 2);
   // The copied backend remains usable without MongoDB during local work. Keep
   // both local restoration sources current so admin edits survive a restart.
@@ -501,6 +517,43 @@ function saveStore() {
     ]))
     .catch((err) => console.error('Failed to save DB state:', err.message));
   return storeWriteQueue;
+}
+
+/**
+ * Predator tokens from the on-disk snapshot, for runs without MongoDB. Read
+ * before the database copy so an operator working locally still sees the
+ * subscriptions they issued.
+ */
+function loadLocalPredatorTokens() {
+  try {
+    const candidateFiles = [RESTORE_SNAPSHOT_FILE, STORE_FILE].filter((filePath) => fs.existsSync(filePath));
+    for (const filePath of candidateFiles) {
+      const saved = JSON.parse(fs.readFileSync(filePath, 'utf8') || '{}');
+      if (Array.isArray(saved?.predatorTokens)) return saved.predatorTokens;
+    }
+  } catch (error) {
+    console.warn('Failed to load locally saved Predator tokens:', error?.message || error);
+  }
+  return null;
+}
+
+/** Catalogue and paid subscriptions from the on-disk snapshot. */
+function loadLocalPredatorState() {
+  try {
+    const candidateFiles = [RESTORE_SNAPSHOT_FILE, STORE_FILE].filter((filePath) => fs.existsSync(filePath));
+    for (const filePath of candidateFiles) {
+      const saved = JSON.parse(fs.readFileSync(filePath, 'utf8') || '{}');
+      if (Array.isArray(saved?.predatorSites) || Array.isArray(saved?.predatorSubscriptions)) {
+        return {
+          sites: Array.isArray(saved.predatorSites) ? saved.predatorSites : null,
+          subscriptions: Array.isArray(saved.predatorSubscriptions) ? saved.predatorSubscriptions : null,
+        };
+      }
+    }
+  } catch (error) {
+    console.warn('Failed to load locally saved Predator catalogue:', error?.message || error);
+  }
+  return { sites: null, subscriptions: null };
 }
 
 function loadLocalGameSettings() {
@@ -740,11 +793,19 @@ async function bootstrapPersistence() {
     // The minimum deposit must survive a restart, otherwise the player-facing
     // tabs can disagree with the value the administrator just selected.
     applyGameSettings(loadLocalGameSettings());
+    const localPredatorTokens = loadLocalPredatorTokens();
+    if (localPredatorTokens) predatorTokens = localPredatorTokens;
+    const localPredatorState = loadLocalPredatorState();
+    if (localPredatorState.sites) predatorSites = localPredatorState.sites;
+    if (localPredatorState.subscriptions) predatorSubscriptions = localPredatorState.subscriptions;
     try {
       const s = await mongodb.loadSettings();
       if (s) {
         siteSettings = Object.assign({}, siteSettings, s);
         applyGameSettings(s);
+        if (Array.isArray(s.predatorTokens)) predatorTokens = s.predatorTokens;
+        if (Array.isArray(s.predatorSites)) predatorSites = s.predatorSites;
+        if (Array.isArray(s.predatorSubscriptions)) predatorSubscriptions = s.predatorSubscriptions;
         if (s.withdrawalPopupSettings && typeof s.withdrawalPopupSettings === 'object') {
           withdrawalPopupSettings = { ...withdrawalPopupSettings, ...s.withdrawalPopupSettings };
         }
@@ -773,6 +834,11 @@ async function bootstrapPersistence() {
         transactions.splice(0, transactions.length, ...localTransactions.slice(0, 500));
       }
       applyGameSettings(loadLocalGameSettings());
+    const localPredatorTokens = loadLocalPredatorTokens();
+    if (localPredatorTokens) predatorTokens = localPredatorTokens;
+    const localPredatorState = loadLocalPredatorState();
+    if (localPredatorState.sites) predatorSites = localPredatorState.sites;
+    if (localPredatorState.subscriptions) predatorSubscriptions = localPredatorState.subscriptions;
       if (users.size === 0) {
         seedDefaultUsers();
       }
@@ -980,6 +1046,15 @@ function getAuthUser(req) {
 function requireAdmin(req, res, next) {
   const user = getAuthUser(req);
   if (!user || !isAdminUser(user)) return res.status(403).json({ message: 'Admin access required' });
+  next();
+}
+
+// Any signed-in account, whatever its role. Used by screens that are shared
+// with players directly by link — the Predator board — where the visitor must
+// hold a real Betzion account but need not be an administrator.
+function requireAuth(req, res, next) {
+  const user = getAuthUser(req);
+  if (!user) return res.status(401).json({ message: 'Sign in to view this page.' });
   next();
 }
 
@@ -2835,9 +2910,595 @@ app.post('/api/admin/users/:id/reset-password', requireAdmin, async (req, res) =
   res.json({ message: 'Password reset successfully' });
 });
 
-app.get('/api/predator', requireAdmin, (req, res) => {
+// ═══════════════════════════════════════════════════════════════════════════════
+// PREDATOR ACCESS TOKENS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Ambiguous glyphs are left out so a code read off a screen and typed into a
+// phone cannot be confused: no O/0, no I/1, no lookalike pairs.
+const PREDATOR_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const PREDATOR_MAX_DURATION_HOURS = 24 * 365;
+// The predictor that runs against this platform's own engine. It is the only
+// site whose signals this server can serve, so it can be renamed or repriced
+// but never deleted.
+const BETZION_SITE_ID = 'betzion';
+
+function makeSiteId(name) {
+  const slug = String(name || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+  return slug || `site-${crypto.randomInt(100000, 999999)}`;
+}
+
+// The catalogue an operator starts with. Every one of these is switched off
+// until an administrator prices it and turns it on, so nothing is offered for
+// sale before it can be delivered. Names, prices, logos and availability are
+// all editable afterwards, and sites can be added or removed.
+// Logo paths point at the files in public/assets. Spaces are percent-encoded
+// so the browser requests them verbatim.
+const DEFAULT_PREDICTOR_SITES = [
+  { id: 'betika', name: 'Betika', accent: '#0072bc', logoUrl: '/assets/images/betika%20logo.jpeg', description: 'Next-crash signals for Betika Aviator.' },
+  { id: 'sportpesa', name: 'SportPesa', accent: '#016f3a', logoUrl: '/assets/images/sportpesa.jpeg', description: 'Next-crash signals for SportPesa Aviator.' },
+  { id: 'sportybet', name: 'SportyBet', accent: '#d7262b', logoUrl: '/assets/images/sportybet%20logo.jpeg', description: 'Next-crash signals for SportyBet Aviator.' },
+  { id: 'odibets', name: 'Odibets', accent: '#00a651', logoUrl: '/assets/images/odibets%20logo.jpeg', description: 'Next-crash signals for Odibets Aviator.' },
+  { id: '1xbet', name: '1xBet', accent: '#1a6dc4', logoUrl: '/assets/images/1xbet%20logo.jpeg', description: 'Next-crash signals for 1xBet Aviator.' },
+  { id: 'mozzartbet', name: 'Mozzart Bet', accent: '#f5a300', logoUrl: '/assets/images/Mozzartbet%20logo.jpeg', description: 'Next-crash signals for Mozzart Bet Aviator.' },
+  { id: 'betway', name: 'Betway', accent: '#00a826', logoUrl: '/assets/images/betway%20logo.jpeg', description: 'Next-crash signals for Betway Aviator.' },
+];
+
+// Bumped whenever the shipped list changes, so an existing catalogue is
+// reconciled once rather than on every boot.
+const PREDATOR_CATALOGUE_VERSION = 2;
+
+function makePredatorSite(fields) {
+  const now = new Date().toISOString();
+  return {
+    id: fields.id || makeSiteId(fields.name),
+    name: fields.name,
+    description: fields.description || '',
+    // A logo image the administrator can point at any hosted file. Left blank,
+    // the player screen draws an initials badge in the site's accent colour,
+    // so the catalogue looks finished without shipping anyone's artwork.
+    logoUrl: fields.logoUrl || '',
+    accent: fields.accent || '#ff0058',
+    priceKes: Number.isFinite(Number(fields.priceKes)) ? Math.round(Number(fields.priceKes)) : 500,
+    durationHours: Number(fields.durationHours) || 24,
+    available: fields.available === true,
+    builtIn: fields.builtIn === true,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+/**
+ * Guarantees the built-in Betzion entry exists and, on a catalogue that has
+ * never been set up, lays out the starter list for the administrator to price.
+ */
+function ensurePredatorSites() {
+  if (!Array.isArray(predatorSites)) predatorSites = [];
+
+  if (!predatorSites.some((site) => site.id === BETZION_SITE_ID)) {
+    predatorSites.unshift(makePredatorSite({
+      id: BETZION_SITE_ID,
+      name: 'Betzion',
+      description: 'Engine-locked crash point for the live Betzion round.',
+      logoUrl: '/assets/icons/betzion-app-icon.svg',
+      accent: '#ffd700',
+      priceKes: 500,
+      durationHours: 24,
+      available: true,
+      builtIn: true,
+    }));
+  }
+
+  // Reconcile against the shipped list once per catalogue version: add any
+  // site that is missing and refresh the artwork, while leaving every price,
+  // duration and availability switch the administrator has set alone.
+  if (siteSettings.predatorCatalogueVersion !== PREDATOR_CATALOGUE_VERSION) {
+    for (const preset of DEFAULT_PREDICTOR_SITES) {
+      const existing = predatorSites.find((site) => site.id === preset.id);
+      if (existing) {
+        existing.name = preset.name;
+        existing.logoUrl = preset.logoUrl;
+        existing.accent = preset.accent;
+        if (!existing.description) existing.description = preset.description;
+      } else {
+        predatorSites.push(makePredatorSite({ ...preset, priceKes: 500, durationHours: 24, available: false }));
+      }
+    }
+
+    const betzion = predatorSites.find((site) => site.id === BETZION_SITE_ID);
+    if (betzion) {
+      betzion.name = 'Betzion';
+      betzion.logoUrl = '/assets/icons/betzion-app-icon.svg';
+      betzion.accent = '#ffd700';
+    }
+
+    // Drop earlier presets that are no longer shipped, unless a player paid
+    // for one — their access is honoured until it lapses.
+    const shipped = new Set([BETZION_SITE_ID, ...DEFAULT_PREDICTOR_SITES.map((preset) => preset.id)]);
+    const retired = ['22bet-aviator', 'bangbet-aviator', 'odibets-aviator', 'betika-aviator', 'sportpesa-aviator', '1xbet-aviator', 'mozzart-aviator', 'betway-aviator'];
+    predatorSites = predatorSites.filter((site) => {
+      if (shipped.has(site.id) || !retired.includes(site.id)) return true;
+      return predatorSubscriptions.some(
+        (entry) => entry.siteId === site.id && subscriptionStatus(entry) === 'active'
+      );
+    });
+
+    siteSettings = { ...siteSettings, predatorCatalogueVersion: PREDATOR_CATALOGUE_VERSION, predatorCatalogueSeeded: true };
+    void persistPredatorTokens();
+  }
+
+  // Older records predate these fields; fill them in so the UI never renders
+  // an undefined colour or logo.
+  for (const site of predatorSites) {
+    if (typeof site.logoUrl !== 'string') site.logoUrl = '';
+    if (!site.accent) site.accent = '#ff0058';
+  }
+
+  return predatorSites;
+}
+
+function findPredatorSite(siteId) {
+  const wanted = String(siteId || '').trim().toLowerCase();
+  return ensurePredatorSites().find((site) => site.id === wanted) || null;
+}
+
+function subscriptionStatus(subscription) {
+  if (!subscription) return 'missing';
+  if (subscription.revokedAt) return 'revoked';
+  return new Date(subscription.expiresAt).getTime() > Date.now() ? 'active' : 'expired';
+}
+
+/**
+ * The live grant for one player on one site, whichever of a redeemed token or
+ * a paid subscription runs longest. Null when they hold neither.
+ */
+function getSiteGrant(userId, siteId) {
+  if (!userId) return null;
+  const fromTokens = predatorTokens
+    .filter((token) => token.redeemedBy === userId
+      && (token.siteId || BETZION_SITE_ID) === siteId
+      && predatorTokenStatus(token) === 'active')
+    .map((token) => ({ expiresAt: token.expiresAt, source: 'token', code: token.code }));
+  const fromPurchases = predatorSubscriptions
+    .filter((entry) => entry.userId === userId && entry.siteId === siteId && subscriptionStatus(entry) === 'active')
+    .map((entry) => ({ expiresAt: entry.expiresAt, source: 'purchase', code: null }));
+
+  const all = [...fromTokens, ...fromPurchases];
+  if (!all.length) return null;
+  return all.reduce((longest, grant) =>
+    new Date(grant.expiresAt).getTime() > new Date(longest.expiresAt).getTime() ? grant : longest
+  );
+}
+
+/** When a new window should start: after any time the player still has left. */
+function grantStartPoint(userId, siteId) {
+  const existing = getSiteGrant(userId, siteId);
+  return existing ? Math.max(Date.now(), new Date(existing.expiresAt).getTime()) : Date.now();
+}
+
+function publicPredatorSite(site, user) {
+  const grant = isAdminUser(user) ? null : getSiteGrant(user?.id, site.id);
+  return {
+    id: site.id,
+    name: site.name,
+    description: site.description || '',
+    logoUrl: site.logoUrl || '',
+    accent: site.accent || '#ff0058',
+    priceKes: Number(site.priceKes) || 0,
+    durationHours: Number(site.durationHours) || 24,
+    available: Boolean(site.available),
+    builtIn: Boolean(site.builtIn),
+    unlocked: isAdminUser(user) ? true : Boolean(grant),
+    expiresAt: grant ? grant.expiresAt : null,
+    source: isAdminUser(user) ? 'admin' : (grant ? grant.source : null),
+  };
+}
+
+function generatePredatorCode() {
+  const block = () => Array.from(
+    { length: 4 },
+    () => PREDATOR_CODE_ALPHABET[crypto.randomInt(PREDATOR_CODE_ALPHABET.length)]
+  ).join('');
+  return `PRD-${block()}-${block()}`;
+}
+
+function normalizePredatorCode(value) {
+  return String(value || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+}
+
+function findPredatorToken(code) {
+  const normalized = normalizePredatorCode(code);
+  if (!normalized) return null;
+  return predatorTokens.find((token) => normalizePredatorCode(token.code) === normalized) || null;
+}
+
+/**
+ * Current state of a token, derived rather than stored, so a subscription
+ * lapses on its own without a sweep job having to run.
+ */
+function predatorTokenStatus(token) {
+  if (!token) return 'missing';
+  if (token.revokedAt) return 'revoked';
+  if (!token.redeemedBy) return 'unused';
+  return new Date(token.expiresAt).getTime() > Date.now() ? 'active' : 'expired';
+}
+
+/**
+ * Administrators read the engine as part of running the platform and are never
+ * asked to pay or redeem; every other account needs a live grant on the
+ * Betzion site, bought or redeemed.
+ */
+function getPredatorAccess(user) {
+  if (isAdminUser(user)) {
+    return { unlocked: true, isAdmin: true, expiresAt: null, code: null, source: 'admin' };
+  }
+  const grant = getSiteGrant(user?.id, BETZION_SITE_ID);
+  return {
+    unlocked: Boolean(grant),
+    isAdmin: false,
+    expiresAt: grant ? grant.expiresAt : null,
+    code: grant ? grant.code : null,
+    source: grant ? grant.source : null,
+  };
+}
+
+function publicPredatorToken(token) {
+  const holder = token.redeemedBy ? getUserById(token.redeemedBy) : null;
+  return {
+    code: token.code,
+    siteId: token.siteId || BETZION_SITE_ID,
+    siteName: token.siteName || (findPredatorSite(token.siteId || BETZION_SITE_ID)?.name || 'Betzion Aviator'),
+    status: predatorTokenStatus(token),
+    durationHours: token.durationHours,
+    note: token.note || '',
+    createdAt: token.createdAt,
+    createdByName: token.createdByName || '',
+    redeemedBy: token.redeemedBy || null,
+    redeemedByName: holder ? (holder.username || holder.phone || token.redeemedBy) : (token.redeemedByName || ''),
+    redeemedAt: token.redeemedAt || null,
+    expiresAt: token.expiresAt || null,
+    revokedAt: token.revokedAt || null,
+  };
+}
+
+async function persistPredatorTokens() {
+  siteSettings = { ...siteSettings, predatorTokens, predatorSites, predatorSubscriptions };
+  try {
+    await Promise.all([saveStore(), mongodb.upsertSettings(siteSettings)]);
+  } catch (error) {
+    console.warn('Failed to persist Predator tokens:', error?.message || error);
+  }
+}
+
+// Admin: mint one or more codes to hand out.
+app.post('/api/admin/predator/tokens', requireAdmin, async (req, res) => {
+  const admin = getAuthUser(req);
+  const { durationHours, count, note, siteId } = req.body || {};
+
+  const site = findPredatorSite(siteId || BETZION_SITE_ID);
+  if (!site) return res.status(400).json({ message: 'Unknown predictor site.' });
+
+  const hours = Number(durationHours);
+  if (!Number.isFinite(hours) || hours <= 0 || hours > PREDATOR_MAX_DURATION_HOURS) {
+    return res.status(400).json({ message: 'Duration must be between 1 hour and 1 year.' });
+  }
+  const howMany = Math.min(Math.max(Math.trunc(Number(count) || 1), 1), 50);
+
+  const created = [];
+  for (let index = 0; index < howMany; index += 1) {
+    let code = generatePredatorCode();
+    while (findPredatorToken(code)) code = generatePredatorCode();
+    const token = {
+      code,
+      siteId: site.id,
+      siteName: site.name,
+      durationHours: hours,
+      note: String(note || '').slice(0, 120),
+      createdAt: new Date().toISOString(),
+      createdBy: admin?.id || null,
+      createdByName: admin?.username || '',
+      redeemedBy: null,
+      redeemedByName: '',
+      redeemedAt: null,
+      expiresAt: null,
+      revokedAt: null,
+    };
+    predatorTokens.unshift(token);
+    created.push(token);
+  }
+
+  await persistPredatorTokens();
+  return res.status(201).json({
+    message: `Generated ${created.length} token${created.length === 1 ? '' : 's'}.`,
+    tokens: created.map(publicPredatorToken),
+  });
+});
+
+// Admin: the full ledger of who holds what.
+app.get('/api/admin/predator/tokens', requireAdmin, (req, res) => {
+  const tokens = predatorTokens.map(publicPredatorToken);
+  const paid = predatorSubscriptions.filter((entry) => subscriptionStatus(entry) === 'active');
+  return res.json({
+    tokens,
+    // Predictor takings do not appear on the transactions screen, which lists
+    // deposits only, so the totals are reported here instead.
+    subscriptions: predatorSubscriptions.map((entry) => ({
+      id: entry.id,
+      userName: entry.userName || entry.userId,
+      siteName: entry.siteName,
+      amountPaid: entry.amountPaid,
+      startedAt: entry.startedAt,
+      expiresAt: entry.expiresAt,
+      status: subscriptionStatus(entry),
+    })),
+    summary: {
+      total: tokens.length,
+      unused: tokens.filter((token) => token.status === 'unused').length,
+      active: tokens.filter((token) => token.status === 'active').length + paid.length,
+      expired: tokens.filter((token) => token.status === 'expired').length,
+      revoked: tokens.filter((token) => token.status === 'revoked').length,
+      paidActive: paid.length,
+      revenueKes: predatorSubscriptions.reduce((sum, entry) => sum + (Number(entry.amountPaid) || 0), 0),
+    },
+  });
+});
+
+// Admin: cut off access immediately, whether or not the code was redeemed.
+app.post('/api/admin/predator/tokens/:code/revoke', requireAdmin, async (req, res) => {
+  const token = findPredatorToken(req.params.code);
+  if (!token) return res.status(404).json({ message: 'Token not found.' });
+  if (token.revokedAt) return res.status(409).json({ message: 'Token is already revoked.' });
+
+  token.revokedAt = new Date().toISOString();
+  await persistPredatorTokens();
+  return res.json({ message: 'Token revoked.', token: publicPredatorToken(token) });
+});
+
+// Admin: remove a code from the ledger entirely.
+app.delete('/api/admin/predator/tokens/:code', requireAdmin, async (req, res) => {
+  const token = findPredatorToken(req.params.code);
+  if (!token) return res.status(404).json({ message: 'Token not found.' });
+  predatorTokens = predatorTokens.filter((entry) => entry !== token);
+  await persistPredatorTokens();
+  return res.json({ message: 'Token deleted.' });
+});
+
+// Admin: the predictor catalogue, prices and availability.
+app.get('/api/admin/predator/sites', requireAdmin, (req, res) => {
+  return res.json({ sites: ensurePredatorSites() });
+});
+
+// Admin: add another site to sell signals for.
+app.post('/api/admin/predator/sites', requireAdmin, async (req, res) => {
+  const { name, description, priceKes, durationHours, available, logoUrl, accent } = req.body || {};
+  const trimmedName = String(name || '').trim();
+  if (!trimmedName) return res.status(400).json({ message: 'A site name is required.' });
+
+  const price = Number(priceKes);
+  if (!Number.isFinite(price) || price < 0) {
+    return res.status(400).json({ message: 'Price must be zero or more.' });
+  }
+  const hours = Number(durationHours);
+  if (!Number.isFinite(hours) || hours <= 0 || hours > PREDATOR_MAX_DURATION_HOURS) {
+    return res.status(400).json({ message: 'Duration must be between 1 hour and 1 year.' });
+  }
+
+  ensurePredatorSites();
+  let id = makeSiteId(trimmedName);
+  while (predatorSites.some((site) => site.id === id)) id = `${makeSiteId(trimmedName)}-${crypto.randomInt(10, 99)}`;
+
+  const site = makePredatorSite({
+    id,
+    name: trimmedName.slice(0, 60),
+    description: String(description || '').slice(0, 160),
+    logoUrl: String(logoUrl || '').slice(0, 400),
+    accent: String(accent || '').slice(0, 20) || '#ff0058',
+    priceKes: Math.round(price),
+    durationHours: hours,
+    // New sites start unavailable so a price can be set and checked before
+    // players are offered something that cannot be delivered yet.
+    available: available === true,
+    builtIn: false,
+  });
+  predatorSites.push(site);
+  await persistPredatorTokens();
+  return res.status(201).json({ message: `${site.name} added.`, site });
+});
+
+// Admin: reprice, rename, or switch a site on and off.
+app.patch('/api/admin/predator/sites/:id', requireAdmin, async (req, res) => {
+  const site = findPredatorSite(req.params.id);
+  if (!site) return res.status(404).json({ message: 'Site not found.' });
+
+  const { name, description, priceKes, durationHours, available, logoUrl, accent } = req.body || {};
+
+  if (logoUrl !== undefined) site.logoUrl = String(logoUrl).slice(0, 400);
+  if (accent !== undefined) site.accent = String(accent).slice(0, 20) || '#ff0058';
+  if (name !== undefined) {
+    const trimmed = String(name).trim();
+    if (!trimmed) return res.status(400).json({ message: 'A site name is required.' });
+    site.name = trimmed.slice(0, 60);
+  }
+  if (description !== undefined) site.description = String(description).slice(0, 160);
+  if (priceKes !== undefined) {
+    const price = Number(priceKes);
+    if (!Number.isFinite(price) || price < 0) return res.status(400).json({ message: 'Price must be zero or more.' });
+    site.priceKes = Math.round(price);
+  }
+  if (durationHours !== undefined) {
+    const hours = Number(durationHours);
+    if (!Number.isFinite(hours) || hours <= 0 || hours > PREDATOR_MAX_DURATION_HOURS) {
+      return res.status(400).json({ message: 'Duration must be between 1 hour and 1 year.' });
+    }
+    site.durationHours = hours;
+  }
+  if (available !== undefined) site.available = Boolean(available);
+  site.updatedAt = new Date().toISOString();
+
+  await persistPredatorTokens();
+  return res.json({ message: `${site.name} updated.`, site });
+});
+
+// Admin: remove an added site. Betzion stays, since its signals come from this
+// server's own engine and players may hold live subscriptions to it.
+app.delete('/api/admin/predator/sites/:id', requireAdmin, async (req, res) => {
+  const site = findPredatorSite(req.params.id);
+  if (!site) return res.status(404).json({ message: 'Site not found.' });
+  if (site.builtIn) return res.status(400).json({ message: 'The Betzion predictor cannot be removed. Switch it off instead.' });
+
+  const liveHolders = predatorSubscriptions.filter(
+    (entry) => entry.siteId === site.id && subscriptionStatus(entry) === 'active'
+  ).length;
+  if (liveHolders > 0 && req.query.force !== 'true') {
+    return res.status(409).json({
+      message: `${liveHolders} player${liveHolders === 1 ? '' : 's'} still hold a paid subscription to ${site.name}. Switch it off instead, or repeat with force=true.`,
+    });
+  }
+
+  predatorSites = predatorSites.filter((entry) => entry.id !== site.id);
+  await persistPredatorTokens();
+  return res.json({ message: `${site.name} removed.` });
+});
+
+// Player: the catalogue as this account sees it, with prices and what they hold.
+app.get('/api/predator/sites', requireAuth, (req, res) => {
+  const user = getAuthUser(req);
+  const wallet = getWalletRecord(user.id);
+  return res.json({
+    balance: Number(parseFloat(wallet.balance) || 0),
+    sites: ensurePredatorSites().map((site) => publicPredatorSite(site, user)),
+  });
+});
+
+// Player: buy a subscription with wallet balance.
+app.post('/api/predator/subscribe', requireAuth, async (req, res) => {
+  const user = getAuthUser(req);
+  if (isAdminUser(user)) {
+    return res.status(400).json({ message: 'Administrator accounts already have Predator access — no purchase needed.' });
+  }
+
+  const site = findPredatorSite(req.body?.siteId);
+  if (!site) return res.status(404).json({ message: 'Unknown predictor site.' });
+  if (!site.available) {
+    return res.status(403).json({ message: `${site.name} signals are not on sale yet. Check back soon.` });
+  }
+
+  const price = Math.round(Number(site.priceKes) || 0);
+  const wallet = getWalletRecord(user.id);
+  const balance = Number(parseFloat(wallet.balance) || 0);
+  if (balance < price) {
+    return res.status(402).json({
+      message: `You need KES ${price} in your wallet to subscribe. Your balance is KES ${balance.toFixed(2)}.`,
+      required: price,
+      balance,
+    });
+  }
+
+  // Charge the wallet the same way every other balance movement in this file
+  // does — adjust the record, write a transaction, tell the open socket. The
+  // M-Pesa deposit flow is not involved: this spends money already on account.
+  wallet.balance = (balance - price).toFixed(2);
+  wallets.set(user.id, wallet);
+
+  const startFrom = grantStartPoint(user.id, site.id);
+  const subscription = {
+    id: `psub-${Date.now()}-${crypto.randomInt(100000, 999999)}`,
+    userId: user.id,
+    userName: user.username || user.phone || '',
+    siteId: site.id,
+    siteName: site.name,
+    amountPaid: price,
+    durationHours: site.durationHours,
+    startedAt: new Date().toISOString(),
+    expiresAt: new Date(startFrom + site.durationHours * 60 * 60 * 1000).toISOString(),
+    revokedAt: null,
+  };
+  predatorSubscriptions.unshift(subscription);
+
+  createTransaction('predator_subscription', user.id, price, 'completed', {
+    channel: 'predator',
+    siteId: site.id,
+    siteName: site.name,
+    reference: subscription.id,
+  });
+  await persistPredatorTokens();
+
+  io.to(user.id).emit('wallet:update', { balance: wallet.balance, depositCount: wallet.depositCount });
+
+  return res.json({
+    message: `${site.name} signals unlocked.`,
+    balance: Number(wallet.balance),
+    subscription: { siteId: site.id, expiresAt: subscription.expiresAt },
+    access: getPredatorAccess(user),
+    sites: ensurePredatorSites().map((entry) => publicPredatorSite(entry, user)),
+  });
+});
+
+// Player: what the subscribe screen needs to decide what to show.
+app.get('/api/predator/access', requireAuth, (req, res) => {
+  const user = getAuthUser(req);
+  return res.json(getPredatorAccess(user));
+});
+
+// Player: exchange a code from the administrator for a subscription window.
+app.post('/api/predator/redeem', requireAuth, async (req, res) => {
+  const user = getAuthUser(req);
+  // Administrators already see the engine, so a code spent on one would be
+  // burned for nothing. Tell them plainly instead of consuming it.
+  if (isAdminUser(user)) {
+    return res.status(400).json({ message: 'Administrator accounts already have Predator access — no token needed.' });
+  }
+
+  const token = findPredatorToken(req.body?.code);
+  const status = predatorTokenStatus(token);
+
+  if (!token) return res.status(404).json({ message: 'That token was not recognised. Check the code and try again.' });
+  if (status === 'revoked') return res.status(403).json({ message: 'This token has been cancelled by the administrator.' });
+  if (status === 'expired') return res.status(403).json({ message: 'This token has already run out.' });
+  if (token.redeemedBy && token.redeemedBy !== user.id) {
+    return res.status(409).json({ message: 'This token has already been used by another player.' });
+  }
+  if (token.redeemedBy === user.id) {
+    return res.json({ message: 'This token is already active on your account.', access: getPredatorAccess(user) });
+  }
+
+  // An unused code starts its window now. A player who already holds a live
+  // grant on that site stacks the new window on top of the remaining time.
+  const startFrom = grantStartPoint(user.id, token.siteId || BETZION_SITE_ID);
+  token.redeemedBy = user.id;
+  token.redeemedByName = user.username || user.phone || '';
+  token.redeemedAt = new Date().toISOString();
+  token.expiresAt = new Date(startFrom + token.durationHours * 60 * 60 * 1000).toISOString();
+
+  await persistPredatorTokens();
+  return res.json({
+    message: 'Predator unlocked. Your signals are live.',
+    access: getPredatorAccess(user),
+  });
+});
+
+app.get('/api/predator', requireAuth, (req, res) => {
+  const access = getPredatorAccess(getAuthUser(req));
   const history = (gameState.history || []).slice(0, 60);
   const currentPhase = gameState.phase || 'idle';
+
+  // Locked visitors get the subscribe screen's backdrop — the live phase and
+  // the crash history, both of which they can already watch on the game — and
+  // nothing that reveals where the current round will end.
+  if (!access.unlocked) {
+    return res.json({
+      access,
+      locked: true,
+      currentState: {
+        phase: currentPhase,
+        currentMultiplier: Number.isFinite(Number(gameState.multiplier)) ? Number(gameState.multiplier) : 1,
+        crashPoint: null,
+        history,
+      },
+      timestamp: new Date().toISOString(),
+    });
+  }
+
   const lockedCrashPoint = Number.isFinite(Number(gameState.crashPoint))
     ? Number(gameState.crashPoint)
     : null;
@@ -2849,6 +3510,8 @@ app.get('/api/predator', requireAdmin, (req, res) => {
   const effectiveCrashPoint = decisionLocked && lockedCrashPoint !== null ? lockedCrashPoint : fallbackEstimate;
 
   res.json({
+    access,
+    locked: false,
     decision: {
       roundNumber: gameState.roundNumber,
       lockedCrashPoint,

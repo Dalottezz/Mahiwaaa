@@ -24,8 +24,10 @@ export const routes: Routes = [
       .then((module) => module.SourceAdminComponent)
   },
   {
+    // Shared with players by link. Any signed-in account may open it; a
+    // visitor without one is sent to sign up and returned here afterwards.
     path: 'predator',
-    canActivate: [adminGuard],
+    canActivate: [authGuard],
     loadComponent: () => import('./features/predator/predator.component')
       .then((module) => module.PredatorComponent)
   },

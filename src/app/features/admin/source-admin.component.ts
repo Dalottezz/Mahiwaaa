@@ -10,7 +10,45 @@ import { API_BASE_URL } from '../../core/config/api-url';
 import { AdminSocketService } from '../../core/services/admin-socket';
 import { GameSocketService } from '../../core/services/game-socket.service';
 
-type Tab = 'overview' | 'live' | 'transactions' | 'users' | 'leaderboard' | 'settings';
+type Tab = 'overview' | 'live' | 'transactions' | 'users' | 'leaderboard' | 'predator' | 'settings';
+
+interface PredatorSite {
+  id: string;
+  name: string;
+  description: string;
+  logoUrl: string;
+  accent: string;
+  priceKes: number;
+  durationHours: number;
+  available: boolean;
+  builtIn: boolean;
+}
+
+interface PredatorSummary {
+  total: number;
+  paidActive: number;
+  revenueKes: number;
+  unused: number;
+  active: number;
+  expired: number;
+  revoked: number;
+}
+
+interface PredatorToken {
+  code: string;
+  siteId: string;
+  siteName: string;
+  status: 'unused' | 'active' | 'expired' | 'revoked';
+  durationHours: number;
+  note: string;
+  createdAt: string;
+  createdByName: string;
+  redeemedBy: string | null;
+  redeemedByName: string;
+  redeemedAt: string | null;
+  expiresAt: string | null;
+  revokedAt: string | null;
+}
 type BalanceMode = 'set' | 'add' | 'subtract';
 interface AdminUser { id: string; username: string; email?: string; phone?: string; balance: string | number; depositCount: number; totalDeposited: number; role: string; isActive: boolean; createdAt: string; withdrawPopupTitleOverride?: string | null; withdrawPopupMessageOverride?: string | null; }
 interface AdminTransaction { id: string; userId: string; type: string; amount: string | number; status: string; createdAt: string; phone?: string; username?: string; reference?: string; externalReference?: string; mpesa_receipt_number?: string; }
@@ -1233,6 +1271,27 @@ interface LeaderboardPlayer { rank: number; username: string; phone?: string; ba
       box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
     }
 
+    /* Inputs sitting directly in a table (the Predator price and duration
+       cells) would otherwise render as bare white boxes on the dark panel. */
+    .table-panel td input[type="number"],
+    .table-panel td input[type="text"] {
+      box-sizing: border-box;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #090c12;
+      color: #fff;
+      padding: 9px 11px;
+      font-size: 13px;
+      font-family: inherit;
+    }
+
+    .table-panel td input[type="number"]:focus,
+    .table-panel td input[type="text"]:focus {
+      outline: none;
+      border-color: var(--border-focus);
+      box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+    }
+
     .fields textarea {
       height: 96px;
       resize: vertical;
@@ -1606,7 +1665,7 @@ interface LeaderboardPlayer { rank: number; username: string; phone?: string; ba
   `],
   template: `
     <main class="admin"><header class="topbar"><img src="/assets/icons/betzion-app-icon.svg" alt="BZ" style="width:35px;height:35px;border-radius:50%;object-fit:cover;"><div class="brand">Betzion <small>Admin Panel</small></div><span class="super">{{ isSuperAdmin ? 'SUPER' : 'ADMIN' }}</span><div class="live-summary"><span class="phase" [class.betting]="stats.currentPhase === 'betting'" [class.flying]="stats.currentPhase === 'flying'" [class.crashed]="stats.currentPhase === 'crashed'"><span class="phase-dot"></span>{{ stats.currentPhase | uppercase }}</span><span class="divider"></span><strong>{{ stats.currentMultiplier | number:'1.2-2' }}x</strong><span class="divider"></span><span>{{ stats.connectedClients }} online</span><button class="game-link" (click)="router.navigate(['/'])"><span class="ico" [innerHTML]="icons.back"></span>Game</button></div></header>
-      <nav class="tabs"><button [class.active]="tab === 'overview'" (click)="selectTab('overview')"><span class="ico" [innerHTML]="icons.dashboard"></span>Dashboard</button><button [class.active]="tab === 'live'" (click)="selectTab('live')"><span class="ico" [innerHTML]="icons.activity"></span>Live Monitor</button><button [class.active]="tab === 'transactions'" (click)="selectTab('transactions')"><span class="ico" [innerHTML]="icons.transactions"></span>Transactions ({{ depositsList.length }})</button><button [class.active]="tab === 'users'" (click)="selectTab('users')"><span class="ico" [innerHTML]="icons.users"></span>Users</button><button [class.active]="tab === 'leaderboard'" (click)="selectTab('leaderboard')"><span class="ico" [innerHTML]="icons.trophy"></span>Leaderboard</button><button [class.active]="tab === 'settings'" (click)="selectTab('settings')"><span class="ico" [innerHTML]="icons.settings"></span>Settings</button></nav>
+      <nav class="tabs"><button [class.active]="tab === 'overview'" (click)="selectTab('overview')"><span class="ico" [innerHTML]="icons.dashboard"></span>Dashboard</button><button [class.active]="tab === 'live'" (click)="selectTab('live')"><span class="ico" [innerHTML]="icons.activity"></span>Live Monitor</button><button [class.active]="tab === 'transactions'" (click)="selectTab('transactions')"><span class="ico" [innerHTML]="icons.transactions"></span>Transactions ({{ depositsList.length }})</button><button [class.active]="tab === 'users'" (click)="selectTab('users')"><span class="ico" [innerHTML]="icons.users"></span>Users</button><button [class.active]="tab === 'leaderboard'" (click)="selectTab('leaderboard')"><span class="ico" [innerHTML]="icons.trophy"></span>Leaderboard</button><button [class.active]="tab === 'predator'" (click)="selectTab('predator')"><span class="ico" [innerHTML]="icons.key"></span>Predator ({{ predatorSummary.active }})</button><button [class.active]="tab === 'settings'" (click)="selectTab('settings')"><span class="ico" [innerHTML]="icons.settings"></span>Settings</button></nav>
       <section class="content"><p *ngIf="message" class="flash" [class.error]="isError" (click)="clearMessage()" role="alert" title="Click to dismiss"><span class="flash-text">{{ message }}</span><button type="button" class="flash-close" (click)="clearMessage(); $event.stopPropagation()" aria-label="Dismiss">&times;</button></p>
         <div *ngIf="balanceEditorUser" class="modal-backdrop" role="presentation" (click)="closeBalanceEditor()"><section class="popup-editor balance-editor" role="dialog" aria-modal="true" aria-labelledby="balance-editor-title" (click)="$event.stopPropagation()"><h2 id="balance-editor-title">Edit Balance — {{ balanceEditorUser.username }}<button type="button" class="balance-close" aria-label="Close balance editor" (click)="closeBalanceEditor()"><span class="ico" [innerHTML]="icons.close"></span></button></h2><p class="balance-current">Current: <strong>{{ balanceEditorUser.balance | number:'1.2-2' }} KES</strong></p><div class="balance-modes" aria-label="Balance update mode"><button type="button" [class.active]="balanceEditorMode === 'set'" (click)="selectBalanceMode('set')">Set To</button><button type="button" [class.active]="balanceEditorMode === 'add'" (click)="selectBalanceMode('add')">Add</button><button type="button" [class.active]="balanceEditorMode === 'subtract'" (click)="selectBalanceMode('subtract')">Subtract</button></div><label for="wallet-balance-input">Amount (KES)</label><input id="wallet-balance-input" type="number" min="0" step="0.01" [(ngModel)]="balanceEditorValue" (keyup.enter)="saveBalance()" autofocus><div class="editor-actions"><button type="button" class="cancel" (click)="closeBalanceEditor()">Cancel</button><button type="button" class="save-popup" (click)="saveBalance()">Update</button></div></section></div>
         <div *ngIf="popupEditorUser" class="modal-backdrop" role="presentation" (click)="closeWithdrawPopupEditor()"><section class="popup-editor" role="dialog" aria-modal="true" aria-labelledby="popup-editor-title" (click)="$event.stopPropagation()"><h2 id="popup-editor-title">Withdrawal notice for {{ popupEditorUser.username }}</h2><p>Leave blank to use the saved global withdrawal notice.</p><label style="display:block;margin-bottom:4px;color:#8b9bb0;font-size:11px;font-weight:700;">Heading / Title</label><input [(ngModel)]="popupEditorTitle" placeholder="e.g. Withdrawal Submitted"><label style="display:block;margin:10px 0 4px;color:#8b9bb0;font-size:11px;font-weight:700;">Message</label><textarea [(ngModel)]="popupEditorMessage" maxlength="500" placeholder="Enter a personal withdrawal notice"></textarea><div class="editor-actions"><button type="button" class="cancel" (click)="closeWithdrawPopupEditor()">Cancel</button><button type="button" class="save-popup" (click)="saveUserWithdrawPopup()">Save notice</button></div></section></div>
@@ -1669,6 +1728,14 @@ interface LeaderboardPlayer { rank: number; username: string; phone?: string; ba
         </ng-container>
         <ng-container *ngIf="tab === 'users'"><div class="section-head"><h1>Users ({{ usersTotal }} registered)</h1><div class="table-tools user-tools"><div class="search-input-group"><input [(ngModel)]="userSearch" (keyup.enter)="loadUsers()" placeholder="Search name, phone, email"><button type="button" class="action search-btn" (click)="loadUsers()"><span class="ico" [innerHTML]="icons.search"></span>Search</button></div><button *ngIf="isSuperAdmin" class="action create-user" (click)="openCreateAdminModal()"><span class="ico" [innerHTML]="icons.userPlus"></span>Create Admin/User</button></div></div><article class="panel table-panel"><table><thead><tr><th>User</th><th>Phone</th><th>Balance</th><th>Deposits</th><th>Role</th><th>Status</th><th>Actions</th></tr></thead><tbody><tr *ngFor="let user of users"><td><span class="user-name">{{ user.username }}</span><span class="sub">{{ user.email || '—' }}</span></td><td>{{ user.phone || '—' }}</td><td class="money">{{ user.balance | number:'1.2-2' }} KES</td><td><strong>{{ user.depositCount }}</strong><span class="sub">{{ user.totalDeposited | number:'1.2-2' }} total</span></td><td><span class="role">{{ user.role | uppercase }}</span></td><td><span class="badge" [class.failed]="!user.isActive">{{ user.isActive ? 'Active' : 'Blocked' }}</span></td><td><div class="actions"><button class="action primary" (click)="editBalance(user)"><span class="ico" [innerHTML]="icons.wallet"></span>Balance</button><button class="action gold" (click)="giveBonus(user)"><span class="ico" [innerHTML]="icons.gift"></span>+100</button><button class="action warn" (click)="setUserActive(user, !user.isActive)"><span class="ico" [innerHTML]="user.isActive ? icons.block : icons.unblock"></span>{{ user.isActive ? 'Block' : 'Unblock' }}</button><button class="action gold" (click)="resetPassword(user)"><span class="ico" [innerHTML]="icons.key"></span>Password</button><button class="action info" (click)="openWithdrawPopupEditor(user)"><span class="ico" [innerHTML]="icons.megaphone"></span>Popup</button><button *ngIf="isSuperAdmin && user.role !== 'SUPER_ADMIN' && user.role !== 'ADMIN'" class="action primary" (click)="promoteToAdmin(user)"><span class="ico" [innerHTML]="icons.shield"></span>Make Admin</button><button *ngIf="isSuperAdmin && user.role === 'ADMIN'" class="action warn" (click)="demoteToUser(user)"><span class="ico" [innerHTML]="icons.demote"></span>Demote</button></div></td></tr><tr *ngIf="!users.length"><td colspan="7" class="empty">No users found.</td></tr></tbody></table></article></ng-container>
         <ng-container *ngIf="tab === 'leaderboard'"><div class="section-head"><h1><span class="ico" [innerHTML]="icons.trophy"></span>Leaderboard</h1><button class="action" (click)="loadLeaderboard()"><span class="ico" [innerHTML]="icons.refresh"></span>Refresh</button></div><article class="panel table-panel"><table><thead><tr><th>#</th><th>Player</th><th>Wallet</th><th>Deposited</th><th>Wagered</th><th>Won</th></tr></thead><tbody><tr *ngFor="let player of leaderboard"><td>{{ player.rank }}</td><td><span class="user-name">{{ player.username }}</span><span class="sub">{{ player.phone || '—' }}</span></td><td class="money">{{ player.balance | number:'1.2-2' }} KES</td><td>{{ player.totalDeposited | number:'1.2-2' }} KES</td><td>{{ player.totalWagered | number:'1.2-2' }} KES</td><td>{{ player.totalWon | number:'1.2-2' }} KES</td></tr></tbody></table></article></ng-container>
+        <ng-container *ngIf="tab === 'predator'"><div class="section-head"><h1><span class="ico" [innerHTML]="icons.key"></span>Predator subscriptions</h1><div class="table-tools"><button type="button" class="action" (click)="copyPredatorLink()"><span class="ico" [innerHTML]="icons.key"></span>{{ predatorLinkLabel }}</button><button type="button" class="action" (click)="loadPredatorTokens()"><span class="ico" [innerHTML]="icons.refresh"></span>Refresh</button></div></div>
+          <article class="panel table-panel"><div class="panel-title">Predictor sites — set the price and switch each one on</div><table><thead><tr><th>Site</th><th>Price (KES)</th><th>Access (hours)</th><th>On sale</th><th></th></tr></thead><tbody><tr *ngFor="let site of predatorSites"><td><div style="display:flex;align-items:center;gap:10px"><span style="width:38px;height:38px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:11px;color:#fff;overflow:hidden;flex:0 0 38px" [style.background]="site.logoUrl ? 'transparent' : site.accent"><img *ngIf="site.logoUrl" [src]="site.logoUrl" [alt]="site.name" style="width:100%;height:100%;object-fit:cover"><ng-container *ngIf="!site.logoUrl">{{ siteInitials(site.name) }}</ng-container></span><div><span class="user-name">{{ site.name }}</span><span class="sub">{{ site.builtIn ? 'Built-in · runs on this engine' : site.description || site.id }}</span></div></div></td><td><input type="number" min="0" step="10" [(ngModel)]="site.priceKes" style="width:110px"></td><td><input type="number" min="1" step="1" [(ngModel)]="site.durationHours" style="width:100px"></td><td><label class="checkbox" style="display:flex;align-items:center;gap:6px"><input type="checkbox" [(ngModel)]="site.available">{{ site.available ? 'On sale' : 'Hidden' }}</label></td><td><div class="actions"><button class="action primary" (click)="savePredatorSite(site)">Save</button><button class="action warn" *ngIf="!site.builtIn" (click)="deletePredatorSite(site)"><span class="ico" [innerHTML]="icons.trash"></span>Remove</button></div></td></tr><tr *ngIf="!predatorSites.length"><td colspan="5" class="empty">No predictor sites configured.</td></tr></tbody></table></article>
+          <div class="settings-grid"><article class="settings-card"><h2>Add another site</h2><div class="fields"><label>Site name<input type="text" maxlength="60" placeholder="e.g. Odibets Aviator" [(ngModel)]="newSiteName"></label><label>Description<input type="text" maxlength="160" placeholder="What the player gets" [(ngModel)]="newSiteDescription"></label><label>Price (KES)<input type="number" min="0" step="10" [(ngModel)]="newSitePrice"></label><label>Duration (hours)<input type="number" min="1" step="1" [(ngModel)]="newSiteDuration"></label><label class="checkbox"><input type="checkbox" [(ngModel)]="newSiteAvailable">Put on sale immediately</label><button class="save" [disabled]="predatorBusy" (click)="addPredatorSite()">Add site</button></div></article>
+          <article class="settings-card"><h2>Issue a token</h2><div class="fields"><label>Site<select [(ngModel)]="predatorTokenSiteId"><option *ngFor="let site of predatorSites" [ngValue]="site.id">{{ site.name }}</option></select></label><label>Access duration<select [(ngModel)]="predatorDurationHours"><option [ngValue]="1">1 hour</option><option [ngValue]="6">6 hours</option><option [ngValue]="24">1 day</option><option [ngValue]="72">3 days</option><option [ngValue]="168">7 days</option><option [ngValue]="720">30 days</option></select></label><label>How many codes<input type="number" min="1" max="50" [(ngModel)]="predatorCount"></label><label>Note (optional)<input type="text" maxlength="120" placeholder="e.g. VIP group, paid 500" [(ngModel)]="predatorNote"></label><button class="save" [disabled]="predatorBusy" (click)="generatePredatorTokens()">{{ predatorBusy ? 'Generating…' : 'Generate token' }}</button></div></article>
+          <article class="settings-card"><h2>Latest codes</h2><p class="sub" *ngIf="!lastGeneratedTokens.length">Generated codes appear here ready to copy and send to a player.</p><div class="fields" *ngIf="lastGeneratedTokens.length"><div class="crash-setter-status armed" *ngFor="let token of lastGeneratedTokens" style="display:flex;justify-content:space-between;align-items:center;gap:10px"><strong style="font-family:ui-monospace,Menlo,monospace;letter-spacing:2px">{{ token.code }}</strong><button type="button" class="action primary" (click)="copyPredatorToken(token.code)">Copy</button></div></div></article></div>
+          <div class="monitor-stats"><article class="monitor-stat"><small>Active subscriptions</small><strong class="phase betting">{{ predatorSummary.active }}</strong><p>Players seeing live signals</p></article><article class="monitor-stat"><small>Unused codes</small><strong class="phase cyan">{{ predatorSummary.unused }}</strong><p>Issued, not yet redeemed</p></article><article class="monitor-stat"><small>Expired</small><strong class="phase">{{ predatorSummary.expired }}</strong><p>Ran out on their own</p></article><article class="monitor-stat"><small>Predictor revenue</small><strong class="phase" style="color:#fbbf24">{{ predatorSummary.revenueKes | number:'1.0-0' }}</strong><p>KES from {{ predatorSummary.paidActive }} live paid subs</p></article><article class="monitor-stat"><small>Revoked</small><strong class="phase crashed">{{ predatorSummary.revoked }}</strong><p>Cancelled by an admin</p></article></div>
+          <article class="panel table-panel"><div class="panel-title">Issued tokens</div><table><thead><tr><th>Code</th><th>Site</th><th>Status</th><th>Player</th><th>Duration</th><th>Expires</th><th>Issued by</th><th>Actions</th></tr></thead><tbody><tr *ngFor="let token of predatorTokens"><td><span class="user-name" style="font-family:ui-monospace,Menlo,monospace;letter-spacing:1px">{{ token.code }}</span><span class="sub">{{ token.note || '—' }}</span></td><td><span class="sub">{{ token.siteName || 'Betzion' }}</span></td><td><span class="badge" [class.failed]="token.status === 'revoked' || token.status === 'expired'">{{ token.status | uppercase }}</span></td><td><span class="user-name">{{ token.redeemedByName || '—' }}</span><span class="sub">{{ token.redeemedAt ? (token.redeemedAt | date:'short') : 'Not redeemed' }}</span></td><td>{{ predatorDurationLabel(token.durationHours) }}</td><td>{{ token.expiresAt ? (token.expiresAt | date:'short') : '—' }}</td><td><span class="sub">{{ token.createdByName || '—' }}</span><span class="sub">{{ token.createdAt | date:'short' }}</span></td><td><div class="actions"><button class="action primary" (click)="copyPredatorToken(token.code)">Copy</button><button class="action warn" *ngIf="token.status === 'unused' || token.status === 'active'" (click)="revokePredatorToken(token)">Revoke</button><button class="action" (click)="deletePredatorToken(token)"><span class="ico" [innerHTML]="icons.trash"></span>Delete</button></div></td></tr><tr *ngIf="!predatorTokens.length"><td colspan="8" class="empty">No tokens issued yet. Generate one above and send the code to a player.</td></tr></tbody></table></article></ng-container>
+
         <ng-container *ngIf="tab === 'settings'"><div class="section-head"><h1>Settings</h1><p>Changes apply to new rounds and withdrawal notices.</p></div><div class="settings-grid"><article class="settings-card"><h2>Game settings</h2><div class="fields"><label>Minimum bet<input type="number" [(ngModel)]="settings.minBet"></label><label>Maximum bet<input type="number" [(ngModel)]="settings.maxBet"></label><label>Minimum deposit (KES)<input type="number" min="1" [(ngModel)]="settings.minDepositAmount"></label><label>Betting duration (ms)<input type="number" [(ngModel)]="settings.bettingDuration"></label><label>Multiplier speed<input type="number" step="0.001" [(ngModel)]="settings.multiplierSpeed"></label><label>House edge<input type="number" step="0.01" [(ngModel)]="settings.houseEdge"></label><button class="save" (click)="saveSettings()">Save game settings</button></div></article><article class="settings-card"><h2>Global withdrawal popup</h2><div class="fields"><label>Heading / Title<input type="text" [(ngModel)]="withdrawalPopupSettings.withdrawPopupTitle" placeholder="Withdrawal Submitted"></label><label>Message<textarea [(ngModel)]="withdrawalPopupSettings.withdrawPopupMessage" maxlength="500"></textarea></label><label>Display duration (ms)<input type="number" min="1500" max="30000" [(ngModel)]="withdrawalPopupSettings.withdrawPopupTTL"></label><label class="checkbox"><input type="checkbox" [(ngModel)]="withdrawalPopupSettings.withdrawPopupEnabled">Enable popup</label><button class="save" (click)="saveWithdrawalPopupSettings()">Save withdrawal popup</button></div></article></div></ng-container>
       </section></main>
   `
@@ -1847,6 +1914,10 @@ export class SourceAdminComponent implements OnInit, OnDestroy {
 
   ngOnInit(): void {
     this.refresh();
+    // Loaded up front so the tab's active-subscription count is meaningful
+    // before an administrator ever opens the Predator tab.
+    this.loadPredatorTokens();
+    this.loadPredatorSites();
     this.refreshSubscription = new Subscription();
 
     const token = this.auth.getToken();
@@ -1894,7 +1965,7 @@ export class SourceAdminComponent implements OnInit, OnDestroy {
       return sum;
     }, 0);
   }
-  selectTab(tab: Tab): void { this.tab = tab; if (tab === 'live') this.startLiveMonitorRefresh(); else this.stopLiveMonitorRefresh(); if (tab === 'transactions') this.loadTransactions(); if (tab === 'users') this.loadUsers(); if (tab === 'leaderboard') this.loadLeaderboard(); }
+  selectTab(tab: Tab): void { this.tab = tab; if (tab === 'live') this.startLiveMonitorRefresh(); else this.stopLiveMonitorRefresh(); if (tab === 'transactions') this.loadTransactions(); if (tab === 'users') this.loadUsers(); if (tab === 'leaderboard') this.loadLeaderboard(); if (tab === 'predator') { this.loadPredatorTokens(); this.loadPredatorSites(); } }
   refresh(): void {
     this.loadStats();
     this.loadUsers();
@@ -2064,6 +2135,187 @@ export class SourceAdminComponent implements OnInit, OnDestroy {
     if (this.liveMonitorTimer) clearInterval(this.liveMonitorTimer);
     this.liveMonitorTimer = null;
   }
+  // ── Predator subscriptions ────────────────────────────────────────────────
+  predatorTokens: PredatorToken[] = [];
+  predatorSummary: PredatorSummary = { total: 0, unused: 0, active: 0, expired: 0, revoked: 0, paidActive: 0, revenueKes: 0 };
+  lastGeneratedTokens: PredatorToken[] = [];
+  predatorDurationHours = 24;
+  predatorCount = 1;
+  predatorNote = '';
+  predatorBusy = false;
+  predatorLinkLabel = 'Copy player link';
+  predatorSites: PredatorSite[] = [];
+  predatorTokenSiteId = 'betzion';
+  newSiteName = '';
+  newSiteDescription = '';
+  newSitePrice = 500;
+  newSiteDuration = 24;
+  newSiteAvailable = false;
+
+  /** Badge text for a site with no logo image, matching the player screen. */
+  siteInitials(name: string): string {
+    const first = String(name || '').trim().split(/\s+/).filter(Boolean)[0] || '';
+    if (!first) return '?';
+    // The first word, not one letter per word: "Betika" and "Betway" both
+    // reduce to "BA" otherwise, and the catalogue shows several such pairs.
+    return first.slice(0, 4).toUpperCase();
+  }
+
+  loadPredatorSites(): void {
+    this.get<{ sites: PredatorSite[] }>('/admin/predator/sites').subscribe({
+      next: response => {
+        this.predatorSites = response?.sites || [];
+        if (!this.predatorSites.some(site => site.id === this.predatorTokenSiteId)) {
+          this.predatorTokenSiteId = this.predatorSites[0]?.id || 'betzion';
+        }
+        this.cdr.detectChanges();
+      },
+      error: () => this.showNotification('Could not load predictor sites.', true),
+    });
+  }
+
+  addPredatorSite(): void {
+    if (this.predatorBusy) return;
+    const name = this.newSiteName.trim();
+    if (!name) { this.showNotification('Give the site a name first.', true); return; }
+    this.predatorBusy = true;
+    this.post('/admin/predator/sites', {
+      name,
+      description: this.newSiteDescription,
+      priceKes: Number(this.newSitePrice),
+      durationHours: Number(this.newSiteDuration),
+      available: this.newSiteAvailable,
+    }).subscribe({
+      next: response => {
+        this.predatorBusy = false;
+        this.newSiteName = '';
+        this.newSiteDescription = '';
+        this.newSiteAvailable = false;
+        this.success(response?.message || 'Site added.');
+        this.loadPredatorSites();
+      },
+      error: error => {
+        this.predatorBusy = false;
+        this.showNotification(error?.error?.message || 'Could not add that site.', true);
+      },
+    });
+  }
+
+  savePredatorSite(site: PredatorSite): void {
+    this.patch(`/admin/predator/sites/${encodeURIComponent(site.id)}`, {
+      name: site.name,
+      description: site.description,
+      priceKes: Number(site.priceKes),
+      durationHours: Number(site.durationHours),
+      available: Boolean(site.available),
+    }).subscribe({
+      next: response => { this.success(response?.message || 'Site updated.'); this.loadPredatorSites(); },
+      error: error => this.showNotification(error?.error?.message || 'Could not update that site.', true),
+    });
+  }
+
+  deletePredatorSite(site: PredatorSite): void {
+    if (!confirm(`Remove ${site.name} from the catalogue?`)) return;
+    this.delete(`/admin/predator/sites/${encodeURIComponent(site.id)}`).subscribe({
+      next: response => { this.success(response?.message || 'Site removed.'); this.loadPredatorSites(); },
+      error: error => {
+        const message = error?.error?.message || 'Could not remove that site.';
+        // The server refuses while players still hold paid access; offer the
+        // override rather than leaving the administrator stuck.
+        if (error?.status === 409 && confirm(`${message}\n\nRemove it anyway?`)) {
+          this.delete(`/admin/predator/sites/${encodeURIComponent(site.id)}?force=true`).subscribe({
+            next: forced => { this.success(forced?.message || 'Site removed.'); this.loadPredatorSites(); },
+            error: () => this.showNotification('Could not remove that site.', true),
+          });
+          return;
+        }
+        this.showNotification(message, true);
+      },
+    });
+  }
+
+  predatorDurationLabel(hours: number): string {
+    if (!Number.isFinite(hours)) return '—';
+    if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'}`;
+    const days = hours / 24;
+    return `${days % 1 === 0 ? days : days.toFixed(1)} day${days === 1 ? '' : 's'}`;
+  }
+
+  loadPredatorTokens(): void {
+    this.get<{ tokens: PredatorToken[]; summary: PredatorSummary }>('/admin/predator/tokens').subscribe({
+      next: response => {
+        this.predatorTokens = response?.tokens || [];
+        if (response?.summary) this.predatorSummary = response.summary;
+        this.cdr.detectChanges();
+      },
+      error: () => this.showNotification('Could not load Predator tokens.', true),
+    });
+  }
+
+  generatePredatorTokens(): void {
+    if (this.predatorBusy) return;
+    const count = Math.min(Math.max(Math.trunc(Number(this.predatorCount) || 1), 1), 50);
+    this.predatorBusy = true;
+    this.post('/admin/predator/tokens', {
+      durationHours: Number(this.predatorDurationHours),
+      siteId: this.predatorTokenSiteId,
+      count,
+      note: this.predatorNote,
+    }).subscribe({
+      next: response => {
+        this.predatorBusy = false;
+        this.lastGeneratedTokens = response?.tokens || [];
+        this.predatorNote = '';
+        this.success(response?.message || 'Token generated.');
+        this.loadPredatorTokens();
+      },
+      error: error => {
+        this.predatorBusy = false;
+        this.showNotification(error?.error?.message || 'Could not generate a token.', true);
+      },
+    });
+  }
+
+  revokePredatorToken(token: PredatorToken): void {
+    if (!confirm(`Revoke ${token.code}? The player loses access immediately.`)) return;
+    this.post(`/admin/predator/tokens/${encodeURIComponent(token.code)}/revoke`, {}).subscribe({
+      next: response => { this.success(response?.message || 'Token revoked.'); this.loadPredatorTokens(); },
+      error: error => this.showNotification(error?.error?.message || 'Could not revoke that token.', true),
+    });
+  }
+
+  deletePredatorToken(token: PredatorToken): void {
+    if (!confirm(`Delete ${token.code} from the ledger? This cannot be undone.`)) return;
+    this.delete(`/admin/predator/tokens/${encodeURIComponent(token.code)}`).subscribe({
+      next: response => {
+        this.lastGeneratedTokens = this.lastGeneratedTokens.filter(entry => entry.code !== token.code);
+        this.success(response?.message || 'Token deleted.');
+        this.loadPredatorTokens();
+      },
+      error: error => this.showNotification(error?.error?.message || 'Could not delete that token.', true),
+    });
+  }
+
+  copyPredatorToken(code: string): void {
+    this.copyToClipboard(code, `Copied ${code}`);
+  }
+
+  copyPredatorLink(): void {
+    this.copyToClipboard(`${window.location.origin}/predator`, 'Player link copied');
+  }
+
+  private copyToClipboard(value: string, confirmation: string): void {
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(value).then(
+        () => this.success(confirmation),
+        () => this.showNotification(value, false, 8000),
+      );
+      return;
+    }
+    // No clipboard API: show the value long enough to be copied by hand.
+    this.showNotification(value, false, 8000);
+  }
+
   private get<T>(path: string) { return this.http.get<T>(`${API_BASE_URL}${path}`, { headers: this.auth.getAuthHeaders() }); }
   private post(path: string, body: unknown) { return this.http.post<any>(`${API_BASE_URL}${path}`, body, { headers: this.auth.getAuthHeaders() }); }
   private patch(path: string, body: unknown) { return this.http.patch<any>(`${API_BASE_URL}${path}`, body, { headers: this.auth.getAuthHeaders() }); }

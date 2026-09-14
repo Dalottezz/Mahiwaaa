@@ -828,10 +828,21 @@ export class AuthLandingComponent implements OnInit, OnDestroy {
       this.authService.loadCurrentUser().subscribe(res => {
         if (res?.user) {
           const dest = res.user.role === 'admin' ? '/admin' : '/bets';
-          this.router.navigate([dest]);
+          this.router.navigateByUrl(this.returnUrl() || dest);
         }
       });
     }
+  }
+
+  /**
+   * Where the visitor was headed before the guard sent them here, when that is
+   * a path inside this app. Anything protocol-relative or absolute is dropped,
+   * so a crafted link cannot bounce someone off-site after they sign in.
+   */
+  private returnUrl(): string | null {
+    const requested = this.route.snapshot.queryParamMap.get('returnUrl');
+    if (!requested || !requested.startsWith('/') || requested.startsWith('//')) return null;
+    return requested;
   }
 
   ngOnDestroy() {
@@ -946,7 +957,7 @@ export class AuthLandingComponent implements OnInit, OnDestroy {
         this.completeLoginAttempt();
         const role = (res.user?.role || '').toLowerCase();
         const dest = (role === 'admin' || role === 'super_admin' || role === 'superadmin') ? '/admin' : '/play';
-        this.router.navigate([dest]);
+        this.router.navigateByUrl(this.returnUrl() || dest);
       },
       error: (err) => {
         this.completeLoginAttempt();
@@ -990,7 +1001,7 @@ export class AuthLandingComponent implements OnInit, OnDestroy {
     }).subscribe({
       next: () => {
         this.isSubmitting = false;
-        this.router.navigate(['/bets']);
+        this.router.navigateByUrl(this.returnUrl() || '/bets');
       },
       error: (err) => {
         this.isSubmitting = false;
