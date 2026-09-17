@@ -1,27 +1,46 @@
 import { CommonModule } from '@angular/common';
 import { ChangeDetectorRef, Component, OnDestroy, OnInit, inject } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
+import { Router } from '@angular/router';
 import { Subscription } from 'rxjs';
 import { AuthService } from '../../core/services/auth.service';
 import { API_BASE_URL } from '../../core/config/api-url';
 import { GameSocketService } from '../../core/services/game-socket.service';
 
+interface PredatorAccess {
+  unlocked: boolean;
+  isAdmin: boolean;
+  expiresAt: string | null;
+  code?: string | null;
+  source?: string | null;
+}
+
 interface PredatorResponse {
-  decision?: {
+  access?: PredatorAccess;
+  locked?: boolean;
+  decision: {
+    roundNumber: number;
+    lockedCrashPoint: number | null;
+    lockedAt: string | null;
+    status: string;
+    phase: string;
+    note: string;
+  };
+  prediction: {
     roundNumber?: number;
-    lockedCrashPoint?: number | null;
-    status?: string;
-    phase?: string;
+    predictedCrashPoint: number;
+    confidence: string;
+    trend: string;
+    basedOn: string;
+    recommendation: string;
   };
-  prediction?: {
-    predictedCrashPoint?: number;
+  currentState: {
+    phase: string;
+    currentMultiplier: number;
+    crashPoint: number | null;
+    history: number[];
   };
-  currentState?: {
-    phase?: string;
-    currentMultiplier?: number;
-    crashPoint?: number | null;
-    history?: number[];
-  };
+  timestamp: string;
 }
 
 @Component({
@@ -71,6 +90,7 @@ interface PredatorResponse {
   `
 })
 export class PredatorComponent implements OnInit, OnDestroy {
+  readonly router = inject(Router);
   private readonly auth = inject(AuthService);
   private readonly http = inject(HttpClient);
   private readonly cdr = inject(ChangeDetectorRef);
@@ -83,17 +103,23 @@ export class PredatorComponent implements OnInit, OnDestroy {
   private lastRoundKey = '';
 
   data: PredatorResponse | null = null;
+  unlocked = false;
+  isAdmin = false;
+  accessExpiresAt: string | null = null;
   recentHistory: number[] = [];
 
+  get isLocked(): boolean {
+    return this.data?.decision?.status?.toLowerCase() === 'locked'
+      && Number.isFinite(Number(this.data?.decision?.lockedCrashPoint));
+  }
+
   get oddsDisplay(): string {
-    const lockedPoint = this.data?.decision?.lockedCrashPoint;
-    if (lockedPoint != null && Number.isFinite(Number(lockedPoint)) && Number(lockedPoint) > 0) {
-      return `${Number(lockedPoint).toFixed(2)}x`;
+    if (this.isLocked && this.data?.decision?.lockedCrashPoint != null) {
+      return `${Number(this.data.decision.lockedCrashPoint).toFixed(2)}x`;
     }
 
-    const predictedPoint = this.data?.prediction?.predictedCrashPoint;
-    if (predictedPoint != null && Number.isFinite(Number(predictedPoint)) && Number(predictedPoint) > 0) {
-      return `${Number(predictedPoint).toFixed(2)}x`;
+    if (this.data?.prediction?.predictedCrashPoint != null && Number.isFinite(Number(this.data.prediction.predictedCrashPoint))) {
+      return `${Number(this.data.prediction.predictedCrashPoint).toFixed(2)}x`;
     }
 
     if (this.recentHistory.length > 0 && Number.isFinite(Number(this.recentHistory[0])) && Number(this.recentHistory[0]) > 0) {
@@ -104,7 +130,12 @@ export class PredatorComponent implements OnInit, OnDestroy {
   }
 
   ngOnInit(): void {
-    const token = this.auth.getToken() || '';
+    const token = this.auth.getToken();
+    if (!token) {
+      this.router.navigate(['/login'], { queryParams: { returnUrl: '/predator' } });
+      return;
+    }
+    this.watchRole();
     this.startLiveUpdates(token);
   }
 
@@ -117,57 +148,106 @@ export class PredatorComponent implements OnInit, OnDestroy {
     this.gameSocket.disconnect();
   }
 
-  private startLiveUpdates(token: string): void {
-    this.load(token);
-    this.refreshTimer = setInterval(() => this.load(token), 1500);
+  private watchRole(): void {
+    this.subscriptions.add(this.auth.currentUser$.subscribe(user => {
+      const role = String(user?.role || '').toLowerCase().replace(/[^a-z]/g, '');
+      this.isAdmin = role === 'admin' || role === 'superadmin';
+      this.cdr.detectChanges();
+    }));
+    if (!this.auth.currentUser$.getValue()) {
+      this.subscriptions.add(this.auth.loadCurrentUser().subscribe());
+    }
+  }
 
-    this.gameSocket.connect(token || '');
+  private startLiveUpdates(token: string): void {
+    this.load();
+    this.refreshTimer = setInterval(() => this.load(), 1500);
+
+    this.gameSocket.connect(token);
 
     this.subscriptions.add(this.gameSocket.roundState$.subscribe(state => {
       const roundKey = `${state.roundId || ''}:${state.phase}`;
       if (!state.roundId || roundKey === this.lastRoundKey) return;
       this.lastRoundKey = roundKey;
-      this.load(token);
-    }));
-
-    this.subscriptions.add(this.gameSocket.roundHistory$.subscribe(history => {
-      if (Array.isArray(history) && history.length > 0) {
-        this.recentHistory = history.map(Number).filter(v => Number.isFinite(v) && v > 0);
-        this.cdr.detectChanges();
-      }
+      this.load();
     }));
   }
 
-  private load(token: string): void {
+  load(): void {
     if (this.requestInFlight) {
       this.refreshQueued = true;
       return;
     }
     this.requestInFlight = true;
 
-    const headers = token ? this.auth.getAuthHeaders() : undefined;
-    this.http.get<PredatorResponse>(`${API_BASE_URL}/predator`, { headers }).subscribe({
+    this.http.get<PredatorResponse>(`${API_BASE_URL}/predator`, { headers: this.auth.getAuthHeaders() }).subscribe({
       next: data => {
-        this.data = data;
-        if (Array.isArray(data?.currentState?.history) && data.currentState.history.length > 0) {
-          this.recentHistory = data.currentState.history
-            .map(Number)
-            .filter(v => Number.isFinite(v) && v > 0);
-        }
-        this.finishRequest(token);
+        this.applyAccess(data?.access);
+        this.recentHistory = (data?.currentState?.history || [])
+          .map(Number)
+          .filter(value => Number.isFinite(value) && value > 0)
+          .slice(0, 12);
+        this.data = this.unlocked ? this.normalizeResponse(data) : null;
+        this.finishRequest();
         this.cdr.detectChanges();
       },
       error: () => {
-        this.finishRequest(token);
+        this.finishRequest();
         this.cdr.detectChanges();
       }
     });
   }
 
-  private finishRequest(token: string): void {
+  private applyAccess(access?: PredatorAccess): void {
+    if (!access) return;
+    this.unlocked = Boolean(access.unlocked);
+    this.isAdmin = Boolean(access.isAdmin) || this.isAdmin;
+    this.accessExpiresAt = access.expiresAt || null;
+  }
+
+  private finishRequest(): void {
     this.requestInFlight = false;
     if (!this.refreshQueued) return;
     this.refreshQueued = false;
-    this.load(token);
+    this.load();
+  }
+
+  private normalizeResponse(payload: PredatorResponse): PredatorResponse {
+    const toNumber = (value: unknown, fallback: number) => {
+      const numberValue = Number(value);
+      return Number.isFinite(numberValue) ? numberValue : fallback;
+    };
+    const lockedPoint = Number(payload?.decision?.lockedCrashPoint);
+    const history = Array.isArray(payload?.currentState?.history)
+      ? payload.currentState.history.map(value => Number(value)).filter(value => Number.isFinite(value) && value > 0)
+      : [];
+
+    return {
+      access: payload?.access,
+      locked: payload?.locked,
+      decision: {
+        roundNumber: toNumber(payload?.decision?.roundNumber, 0),
+        lockedCrashPoint: Number.isFinite(lockedPoint) ? lockedPoint : null,
+        lockedAt: payload?.decision?.lockedAt || null,
+        status: payload?.decision?.status || 'completed',
+        phase: payload?.decision?.phase || 'idle',
+        note: payload?.decision?.note || 'Waiting for engine...',
+      },
+      prediction: {
+        roundNumber: toNumber(payload?.prediction?.roundNumber, 0),
+        predictedCrashPoint: toNumber(payload?.prediction?.predictedCrashPoint, 1.5),
+        confidence: payload?.prediction?.confidence || 'low',
+        trend: payload?.prediction?.trend || 'neutral',
+        basedOn: payload?.prediction?.basedOn || '',
+        recommendation: payload?.prediction?.recommendation || 'Please wait',
+      },
+      currentState: {
+        phase: payload?.currentState?.phase || 'idle',
+        currentMultiplier: toNumber(payload?.currentState?.currentMultiplier, 1),
+        crashPoint: Number.isFinite(Number(payload?.currentState?.crashPoint)) ? Number(payload.currentState.crashPoint) : null,
+        history,
+      },
+      timestamp: payload?.timestamp || new Date().toISOString(),
+    };
   }
 }
