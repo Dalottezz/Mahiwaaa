@@ -3543,16 +3543,15 @@ app.get('/api/predator', requireAuth, (req, res) => {
     });
   }
 
-  // The board always names the next round a player can still bet on. While
-  // betting is open that is this round, so the figure a subscriber was shown a
-  // moment ago stays on screen instead of jumping as the round opens. At every
-  // other point it is the round after, drawn ahead and held for the engine.
+  // The board names where the round on screen is going to end, never a round
+  // after it: the figure belongs to the round the viewer is watching, from the
+  // moment betting opens until it crashes. Publishing the round after was read
+  // as the board being out of step with the game.
   const bettingOpen = currentPhase === 'betting';
-  const signalCrashPoint = bettingOpen
+  const lockedCrashPoint = Number.isFinite(Number(gameState.crashPoint))
     ? Number(gameState.crashPoint)
-    : getUpcomingCrashPoint(PREDATOR_ROOM_ID);
-  const signalRound = bettingOpen ? gameState.roundNumber : gameState.roundNumber + 1;
-  const lockedCrashPoint = Number.isFinite(Number(signalCrashPoint)) ? Number(signalCrashPoint) : null;
+    : null;
+  const signalRound = gameState.roundNumber;
 
   res.json({
     access,
@@ -3565,17 +3564,17 @@ app.get('/api/predator', requireAuth, (req, res) => {
       phase: currentPhase,
       note: bettingOpen
         ? 'Betting is open on this round and it will resolve at this point.'
-        : 'This is the crash point the next round will open on.',
+        : 'This is where the round in play is going to end.',
     },
     prediction: {
       roundNumber: signalRound,
       predictedCrashPoint: lockedCrashPoint !== null ? lockedCrashPoint : 1.5,
       confidence: 'engine-locked',
       trend: 'neutral',
-      basedOn: 'Direct engine decision, drawn before the round opens.',
+      basedOn: 'Direct engine decision for the round in play.',
       recommendation: bettingOpen
         ? 'Betting is open on this round.'
-        : 'This figure belongs to the next round.',
+        : 'This figure belongs to the round on screen.',
     },
     currentState: {
       phase: currentPhase,
