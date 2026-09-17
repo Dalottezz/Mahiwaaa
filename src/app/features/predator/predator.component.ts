@@ -82,10 +82,18 @@ interface PredatorResponse {
       line-height: 1;
       text-align: center;
     }
+
+    .status {
+      font-size: clamp(1rem, 2.4vw, 1.4rem);
+      font-weight: 500;
+      color: #8a8f98;
+      text-align: center;
+    }
   `],
   template: `
     <main class="predator-screen">
-      <div class="odds">{{ oddsDisplay }}</div>
+      <div class="odds" *ngIf="oddsDisplay; else waiting">{{ oddsDisplay }}</div>
+      <ng-template #waiting><div class="status">{{ statusText }}</div></ng-template>
     </main>
   `
 })
@@ -107,26 +115,34 @@ export class PredatorComponent implements OnInit, OnDestroy {
   isAdmin = false;
   accessExpiresAt: string | null = null;
   recentHistory: number[] = [];
+  hasLoaded = false;
 
   get isLocked(): boolean {
     return this.data?.decision?.status?.toLowerCase() === 'locked'
       && Number.isFinite(Number(this.data?.decision?.lockedCrashPoint));
   }
 
+  /**
+   * The number on screen is only ever the engine's crash point for the round
+   * that is open right now. The engine fixes that value when betting starts,
+   * so it exists during betting and flying and not in the gap after a crash.
+   *
+   * Earlier fallbacks filled that gap with the latest entry in the crash
+   * history, which is the round that has already ended, so the screen always
+   * trailed the game by exactly one crash. They are left out on purpose.
+   */
   get oddsDisplay(): string {
     if (this.isLocked && this.data?.decision?.lockedCrashPoint != null) {
       return `${Number(this.data.decision.lockedCrashPoint).toFixed(2)}x`;
     }
+    return '';
+  }
 
-    if (this.data?.prediction?.predictedCrashPoint != null && Number.isFinite(Number(this.data.prediction.predictedCrashPoint))) {
-      return `${Number(this.data.prediction.predictedCrashPoint).toFixed(2)}x`;
-    }
-
-    if (this.recentHistory.length > 0 && Number.isFinite(Number(this.recentHistory[0])) && Number(this.recentHistory[0]) > 0) {
-      return `${Number(this.recentHistory[0]).toFixed(2)}x`;
-    }
-
-    return '2.19x';
+  /** Shown in place of the odds when there is no live figure to give. */
+  get statusText(): string {
+    if (!this.hasLoaded) return 'Connecting…';
+    if (!this.unlocked) return 'Subscription required';
+    return 'Waiting for next round…';
   }
 
   ngOnInit(): void {
@@ -188,6 +204,7 @@ export class PredatorComponent implements OnInit, OnDestroy {
           .filter(value => Number.isFinite(value) && value > 0)
           .slice(0, 12);
         this.data = this.unlocked ? this.normalizeResponse(data) : null;
+        this.hasLoaded = true;
         this.finishRequest();
         this.cdr.detectChanges();
       },
