@@ -1645,7 +1645,10 @@ function startRoomBettingPhase(roomId) {
   // An armed admin override wins for this one round only; with nothing armed
   // the room uses the normal generated crash point exactly as before.
   const armedCrashPoint = consumeNextCrashOverride(roomId);
-  room.crashPoint = armedCrashPoint !== null ? armedCrashPoint : generateCrashPoint();
+  // The Predator has already published this round's crash point, so the round
+  // must open on that exact value. An armed admin override still wins.
+  const predatorCrashPoint = takePredatorCrashPoint(roomId);
+  room.crashPoint = armedCrashPoint !== null ? armedCrashPoint : predatorCrashPoint;
   room.usedAdminCrashPoint = armedCrashPoint !== null;
   if (armedCrashPoint !== null) {
     console.log(`[Room ${roomId} Round ${room.roundNumber}] Using admin-set crash point ${armedCrashPoint}x`);
@@ -2911,6 +2914,47 @@ app.post('/api/admin/users/:id/reset-password', requireAdmin, async (req, res) =
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// PREDATOR: ONE ROUND AHEAD
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// The engine used to invent a round's crash point at the moment betting opened,
+// which left nothing to publish about the round after it. The Predator now
+// draws that number a round early and holds it here; the engine takes it when
+// the round opens, so what a subscriber saw is what the round resolves at.
+const predatorNextCrash = new Map();
+
+// The Predator reads the same room the board has always read, room 1.
+const PREDATOR_ROOM_ID = 1;
+
+/** The armed admin override for a room, without consuming it. */
+function peekNextCrashOverride(roomId) {
+  return nextCrashOverrides.has(roomId) ? nextCrashOverrides.get(roomId) : null;
+}
+
+/**
+ * The crash point the next round of this room will open on, drawing it now if
+ * it has not been drawn yet. An armed admin override is reported instead, so
+ * the board never promises a figure the administrator has already overruled.
+ */
+function getUpcomingCrashPoint(roomId) {
+  const armed = peekNextCrashOverride(roomId);
+  if (armed !== null) return armed;
+  if (!predatorNextCrash.has(roomId)) {
+    predatorNextCrash.set(roomId, generateCrashPoint());
+  }
+  return predatorNextCrash.get(roomId);
+}
+
+/** Hands the held figure to the engine and clears it for the round after. */
+function takePredatorCrashPoint(roomId) {
+  const value = predatorNextCrash.has(roomId)
+    ? predatorNextCrash.get(roomId)
+    : generateCrashPoint();
+  predatorNextCrash.delete(roomId);
+  return value;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // PREDATOR ACCESS TOKENS
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -3499,40 +3543,39 @@ app.get('/api/predator', requireAuth, (req, res) => {
     });
   }
 
-  const lockedCrashPoint = Number.isFinite(Number(gameState.crashPoint))
+  // The board always names the next round a player can still bet on. While
+  // betting is open that is this round, so the figure a subscriber was shown a
+  // moment ago stays on screen instead of jumping as the round opens. At every
+  // other point it is the round after, drawn ahead and held for the engine.
+  const bettingOpen = currentPhase === 'betting';
+  const signalCrashPoint = bettingOpen
     ? Number(gameState.crashPoint)
-    : null;
-  const decisionLocked = currentPhase === 'betting' || currentPhase === 'flying';
-
-  // Keep a fallback estimate only for times when the next round has not locked yet.
-  const fallbackAvg = history.slice(0, 10).reduce((sum, value) => sum + Number(value || 0), 0) / (history.slice(0, 10).length || 1);
-  const fallbackEstimate = Math.max(1.01, Number((fallbackAvg || 1.5).toFixed(2)));
-  const effectiveCrashPoint = decisionLocked && lockedCrashPoint !== null ? lockedCrashPoint : fallbackEstimate;
+    : getUpcomingCrashPoint(PREDATOR_ROOM_ID);
+  const signalRound = bettingOpen ? gameState.roundNumber : gameState.roundNumber + 1;
+  const lockedCrashPoint = Number.isFinite(Number(signalCrashPoint)) ? Number(signalCrashPoint) : null;
 
   res.json({
     access,
     locked: false,
     decision: {
-      roundNumber: gameState.roundNumber,
+      roundNumber: signalRound,
       lockedCrashPoint,
       lockedAt: gameState.bettingStartedAt ? new Date(gameState.bettingStartedAt).toISOString() : null,
-      status: decisionLocked ? 'locked' : 'completed',
+      status: lockedCrashPoint !== null ? 'locked' : 'pending',
       phase: currentPhase,
-      note: decisionLocked
-        ? 'This round crash point is already decided by the engine when betting opens.'
-        : 'Round is complete. Next round locks when betting starts.',
+      note: bettingOpen
+        ? 'Betting is open on this round and it will resolve at this point.'
+        : 'This is the crash point the next round will open on.',
     },
     prediction: {
-      roundNumber: decisionLocked ? gameState.roundNumber : gameState.roundNumber + 1,
-      predictedCrashPoint: effectiveCrashPoint,
-      confidence: decisionLocked ? 'engine-locked' : 'low',
+      roundNumber: signalRound,
+      predictedCrashPoint: lockedCrashPoint !== null ? lockedCrashPoint : 1.5,
+      confidence: 'engine-locked',
       trend: 'neutral',
-      basedOn: decisionLocked
-        ? 'Direct engine decision for the active round.'
-        : 'Fallback estimate while waiting for next round lock.',
-      recommendation: decisionLocked
-        ? 'Use locked crash point for this round only.'
-        : 'Wait for betting phase to lock the next round.',
+      basedOn: 'Direct engine decision, drawn before the round opens.',
+      recommendation: bettingOpen
+        ? 'Betting is open on this round.'
+        : 'This figure belongs to the next round.',
     },
     currentState: {
       phase: currentPhase,
