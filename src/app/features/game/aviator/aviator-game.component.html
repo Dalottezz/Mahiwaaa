@@ -270,6 +270,8 @@
         </div>
       </div>
 
+      <p *ngIf="isPlayLimited()" class="play-limit-notice" role="status">{{ playLimitMessage }}</p>
+
       <!-- DUAL BET CONTROL PANELS -->
       <div class="dual-bet-panels">
         <!-- PANEL 1 -->
@@ -309,7 +311,7 @@
               <!-- PRE-ROUND: PLACE BET -->
               <button *ngIf="gameState() === 'WAITING' && !panel1().hasActiveBet && !panel1().queuedAmount" 
                       class="big-bet-btn green" 
-                      [disabled]="panel1().isPending" 
+                      [disabled]="panel1().isPending || isPlayLimited()"
                       (click)="placeBet(1)">
                 <span class="btn-title">{{ panel1().isPending ? 'Placing...' : 'Bet' }}</span>
                 <span class="btn-sub">{{ panel1().amount | number:'1.2-2' }} KES</span>
@@ -342,6 +344,7 @@
               <!-- RUNNING / CRASHED: cash-out is confirmed in the notification; one next-round action remains. -->
               <button *ngIf="(gameState() === 'RUNNING' || gameState() === 'CRASHED') && panel1().hasCashedOut && !panel1().queuedAmount"
                       class="big-bet-btn green"
+                      [disabled]="isPlayLimited()"
                       (click)="queueBet(1)">
                 <span class="btn-title">Bet</span>
                 <span class="btn-sub">{{ panel1().amount | number:'1.2-2' }} KES</span>
@@ -350,6 +353,7 @@
               <!-- RUNNING / CRASHED: NO ACTIVE BET -->
               <button *ngIf="(gameState() === 'RUNNING' || gameState() === 'CRASHED') && !panel1().hasActiveBet && !panel1().hasCashedOut && !panel1().queuedAmount"
                       class="big-bet-btn green"
+                      [disabled]="isPlayLimited()"
                       (click)="queueBet(1)">
                 <span class="btn-title">Bet</span>
                 <span class="btn-sub">{{ panel1().amount | number:'1.2-2' }} KES</span>
@@ -364,6 +368,7 @@
               <button type="button" 
                       class="toggle-switch-btn" 
                       [class.active]="panel1().autoBetEnabled" 
+                      [disabled]="isPlayLimited()"
                       (click)="toggleAutoBet(1)"
                       aria-label="Toggle Auto bet">
                 <span class="toggle-knob"></span>
@@ -432,7 +437,7 @@
               <!-- PRE-ROUND: PLACE BET -->
               <button *ngIf="gameState() === 'WAITING' && !panel2().hasActiveBet && !panel2().queuedAmount" 
                       class="big-bet-btn green" 
-                      [disabled]="panel2().isPending" 
+                      [disabled]="panel2().isPending || isPlayLimited()"
                       (click)="placeBet(2)">
                 <span class="btn-title">{{ panel2().isPending ? 'Placing...' : 'Bet' }}</span>
                 <span class="btn-sub">{{ panel2().amount | number:'1.2-2' }} KES</span>
@@ -465,6 +470,7 @@
               <!-- RUNNING / CRASHED: cash-out is confirmed in the notification; one next-round action remains. -->
               <button *ngIf="(gameState() === 'RUNNING' || gameState() === 'CRASHED') && panel2().hasCashedOut && !panel2().queuedAmount"
                       class="big-bet-btn green"
+                      [disabled]="isPlayLimited()"
                       (click)="queueBet(2)">
                 <span class="btn-title">Bet</span>
                 <span class="btn-sub">{{ panel2().amount | number:'1.2-2' }} KES</span>
@@ -473,6 +479,7 @@
               <!-- RUNNING / CRASHED: NO ACTIVE BET -->
               <button *ngIf="(gameState() === 'RUNNING' || gameState() === 'CRASHED') && !panel2().hasActiveBet && !panel2().hasCashedOut && !panel2().queuedAmount"
                       class="big-bet-btn green"
+                      [disabled]="isPlayLimited()"
                       (click)="queueBet(2)">
                 <span class="btn-title">Bet</span>
                 <span class="btn-sub">{{ panel2().amount | number:'1.2-2' }} KES</span>
@@ -487,6 +494,7 @@
               <button type="button" 
                       class="toggle-switch-btn" 
                       [class.active]="panel2().autoBetEnabled" 
+                      [disabled]="isPlayLimited()"
                       (click)="toggleAutoBet(2)"
                       aria-label="Toggle Auto bet">
                 <span class="toggle-knob"></span>

@@ -4,6 +4,7 @@ import { FormsModule } from '@angular/forms';
 import { Router } from '@angular/router';
 import { Subscription } from 'rxjs';
 import { AuthService, User } from '../../core/services/auth.service';
+import { MAX_PLAY_BALANCE, PLAY_LIMIT_MESSAGE } from '../../core/config/play-limits';
 
 interface FootballMatch {
   id: string;
@@ -275,6 +276,10 @@ export class BetsComponent implements OnInit, OnDestroy {
   }
 
   placeDemoBet(): void {
+    if (this.userBalance() > MAX_PLAY_BALANCE) {
+      alert(PLAY_LIMIT_MESSAGE);
+      return;
+    }
     if (!this.selections().length) return;
     alert(`Bet placed! Total odds: ${this.combinedOdds()}`);
     this.selections.set([]);

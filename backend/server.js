@@ -78,6 +78,8 @@ const io = new Server(server, {
 const PORT = process.env.PORT || 3022;
 const JWT_SECRET = process.env.JWT_SECRET || 'aviator_local_secret_key_2026';
 const FIRST_DEPOSIT_REQUIRED_MESSAGE = 'A funded game balance is required before placing bets.';
+const MAX_PLAY_BALANCE = 500_000;
+const PLAY_LIMIT_MESSAGE = 'Play is limited because your wallet balance exceeds KES 500,000. You can still withdraw your funds.';
 const NEW_MEMBER_BONUS_AMOUNT = 1999;
 const MIN_DEPOSIT_AMOUNT = Math.max(1, Number(process.env.MIN_DEPOSIT_AMOUNT) || 999);
 // Hard ceiling on a single deposit. Unlike the minimum, this is deliberately
@@ -1859,6 +1861,12 @@ io.on('connection', (socket) => {
     }
 
     const balance = parseFloat(wallet.balance);
+    if (balance > MAX_PLAY_BALANCE) {
+      return emitBetError(PLAY_LIMIT_MESSAGE);
+    }
+    if (typeof amount !== 'number' || !Number.isFinite(amount)) {
+      return emitBetError('Please enter a valid bet amount');
+    }
     if (amount < gameSettings.minBet || amount > gameSettings.maxBet || amount > balance) {
       return emitBetError('Invalid bet amount');
     }

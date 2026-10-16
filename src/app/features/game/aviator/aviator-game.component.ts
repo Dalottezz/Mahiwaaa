@@ -20,6 +20,7 @@ import { ChatMessage, GameSocketService, LiveBetBroadcast, SourceGameBet } from 
 import { AuthService, User, TransactionRecord } from '../../../core/services/auth.service';
 import { GameSoundService } from '../../../core/services/game-sound.service';
 import { MAX_DEPOSIT_AMOUNT } from '../../../core/config/deposit-limits';
+import { MAX_PLAY_BALANCE, PLAY_LIMIT_MESSAGE } from '../../../core/config/play-limits';
 
 export type GameState = 'WAITING' | 'RUNNING' | 'CRASHED';
 
@@ -377,6 +378,8 @@ export class AviatorGameComponent implements OnInit, AfterViewInit, OnDestroy {
   private mpesaCheckoutRequestId: string = '';
 
   public currentUser = signal<User | null>(null);
+  public readonly isPlayLimited = computed(() => this.userBalance() > MAX_PLAY_BALANCE);
+  public readonly playLimitMessage = PLAY_LIMIT_MESSAGE;
 
   // Live Betzion chat. The server enforces this threshold; the computed value
   // keeps the composer in sync with wallet updates before the next chat event.
@@ -564,6 +567,24 @@ export class AviatorGameComponent implements OnInit, AfterViewInit, OnDestroy {
   private readonly allowStandaloneRounds = false;
 
   constructor() {
+    effect(() => {
+      if (!this.isPlayLimited()) return;
+      // Stop future automatic/queued bets while preserving active bets and cashouts.
+      let refund = 0;
+      for (const room of [this.room1, this.room2, this.room3]) {
+        for (const panel of [room.panel1, room.panel2]) {
+          panel.update(p => {
+            if (!this.isConnected()) refund += p.queuedAmount;
+            return { ...p, autoBetEnabled: false, queuedAmount: 0 };
+          });
+        }
+      }
+      if (refund > 0) {
+        const balance = this.userBalance() + refund;
+        this.userBalance.set(balance);
+        this.authService.updateBalance(balance);
+      }
+    });
     // Effect to reflect balance changes or auto-cashout evaluations
     effect(() => {
       const state = this.gameState();
@@ -1182,6 +1203,10 @@ export class AviatorGameComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   public placeBet(panelIndex: 1 | 2) {
+    if (this.isPlayLimited()) {
+      this.showToast(PLAY_LIMIT_MESSAGE, true);
+      return;
+    }
     // Once the plane is in flight, a stake belongs to the following round.
     if (this.gameState() !== 'WAITING') {
       this.queueBet(panelIndex);
@@ -1259,6 +1284,10 @@ export class AviatorGameComponent implements OnInit, AfterViewInit, OnDestroy {
    * bet by activateQueuedBet as soon as the next betting phase opens.
    */
   public queueBet(panelIndex: 1 | 2) {
+    if (this.isPlayLimited()) {
+      this.showToast(PLAY_LIMIT_MESSAGE, true);
+      return;
+    }
     const panel = panelIndex === 1 ? this.panel1() : this.panel2();
     const amount = panel.amount;
 
@@ -1311,6 +1340,16 @@ export class AviatorGameComponent implements OnInit, AfterViewInit, OnDestroy {
     const queuedAmount = panel.queuedAmount;
 
     if (queuedAmount <= 0) return;
+    if (this.isPlayLimited()) {
+      if (!this.isConnected()) {
+        const balance = this.userBalance() + queuedAmount;
+        this.userBalance.set(balance);
+        this.authService.updateBalance(balance);
+      }
+      const targetPanel = panelIndex === 1 ? room.panel1 : room.panel2;
+      targetPanel.update(p => ({ ...p, queuedAmount: 0, autoBetEnabled: false }));
+      return;
+    }
 
     if (this.isConnected()) {
       this.setPanelPending(panelIndex, true, true, roomId);
