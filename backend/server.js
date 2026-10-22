@@ -2497,15 +2497,6 @@ app.post('/api/payments/withdraw', async (req, res) => {
       const prevBal = parseFloat(wallet.balance || '0');
       wallet.balance = Math.max(0, parseFloat((prevBal - numericAmount).toFixed(2))).toFixed(2);
       saveStore();
-      if (walletsCollection) {
-        try {
-          await walletsCollection.updateOne(
-            { userId: user.id },
-            { $set: { balance: wallet.balance } },
-            { upsert: true }
-          );
-        } catch (wErr) {}
-      }
     }
 
     // Generate authentic 10-char M-PESA receipt code using configured prefix
