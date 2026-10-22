@@ -5,7 +5,7 @@ export interface WithdrawalNotice {
   reference: string;
   amount: number;
   phone: string;
-  balance: number;
+  balance?: number;
   at: Date;
   codePrefix?: string;
   message?: string;

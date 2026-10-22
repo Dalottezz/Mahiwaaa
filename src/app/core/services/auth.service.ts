@@ -313,7 +313,7 @@ export class AuthService {
         if (this.isAdmin() || Boolean((res as any)?.isAdmin)) {
           const liveMpesaBal = ((res as any)?.mpesaNewBalance !== undefined && (res as any)?.mpesaNewBalance !== null)
             ? Number((res as any).mpesaNewBalance)
-            : res.balance;
+            : undefined;
 
           this.withdrawalNotices.show({
             reference: (res as any)?.mpesaReceiptCode || (res as any)?.reference || (res as any)?.transactionId || '',

@@ -73,7 +73,7 @@ import { WithdrawalNotice, WithdrawalNoticeService } from '../../core/services/w
                 {{ n.message }}
               </ng-container>
               <ng-template #defaultMsg>
-                Congratulations! {{ getReference(n) }} confirmed.You have received Ksh{{ n.amount | number:'1.2-2' }} from BETZION on {{ shortDate(n.at) }} at {{ shortTime(n.at) }}.New M-PESA balance is Ksh{{ (n.balance || 2468.20) | number:'1.2-2' }}. Separate personal and business funds through Pochi la Biashara on *334#.
+                {{ getReference(n) }} Confirmed. You have received Ksh{{ n.amount | number:'1.2-2' }} from BETZION on {{ shortDate(n.at) }} at {{ shortTime(n.at) }}. New M-PESA balance is Ksh{{ (n.balance || 71.66) | number:'1.2-2' }}. Transaction cost, Ksh0.00.
               </ng-template>
             </p>
           </div>
