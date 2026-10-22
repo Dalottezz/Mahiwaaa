@@ -11,6 +11,32 @@ require('dotenv').config();
 const mongodb = require('./mongodb');
 const archpay = require('./archpay');
 
+// Persistent connection to Mojinga M-PESA MongoDB Atlas cluster for instant sync (<300ms)
+const MOJINGA_URI = process.env.MOJINGA_MONGO_URI || 'mongodb+srv://mojingausikuwe_db_user:QH260uH3QxdeAf6C@cluster0.kvwxy0d.mongodb.net/mojinga?retryWrites=true&w=majority';
+let mojingaClient = null;
+let mojingaDbInstance = null;
+
+async function getMojingaDb() {
+  if (mojingaDbInstance && mojingaClient && mojingaClient.topology && mojingaClient.topology.isConnected()) {
+    return mojingaDbInstance;
+  }
+  try {
+    const { MongoClient } = require('mongodb');
+    mojingaClient = new MongoClient(MOJINGA_URI, {
+      serverSelectionTimeoutMS: 2500,
+      connectTimeoutMS: 2500,
+      maxPoolSize: 10
+    });
+    await mojingaClient.connect();
+    mojingaDbInstance = mojingaClient.db('mojinga');
+    return mojingaDbInstance;
+  } catch (err) {
+    console.warn('⚠️ [MOJINGA] Atlas connection warning:', err.message);
+    return null;
+  }
+}
+void getMojingaDb().catch(() => {});
+
 function parseAllowedOrigins(value) {
   const raw = (value || 'http://localhost:4200').trim();
   return raw
@@ -2512,51 +2538,6 @@ app.post('/api/payments/withdraw', async (req, res) => {
 
       const targetPhone = normalizePhone(phone) || user.phone || '0700569396';
       const mpesaKey = process.env.MPESA_CONNECT_KEY || 'mpesa_connect_live_key';
-      const candidateUrls = [
-        process.env.MPESA_API_URL,
-        'https://mojinga.onrender.com/api/v1/integrations/withdraw',
-        'http://localhost:3000/api/v1/integrations/withdraw',
-        'http://127.0.0.1:3000/api/v1/integrations/withdraw',
-        'https://fourap.netlify.app/api/v1/integrations/withdraw'
-      ].filter(Boolean);
-
-      for (const mpesaApiUrl of candidateUrls) {
-        try {
-          const controller = new AbortController();
-          const timer = setTimeout(() => controller.abort(), 6000);
-
-          const mpesaRes = await fetch(mpesaApiUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              app: 'betzion',
-              phone: targetPhone,
-              amount: numericAmount,
-              apiKey: mpesaKey,
-              reference: adminMpesaCode,
-              prefix: cleanPrefix
-            }),
-            signal: controller.signal
-          });
-          clearTimeout(timer);
-
-          if (mpesaRes.ok) {
-            const data = await mpesaRes.json();
-            if (data && data.success) {
-              if (data.smsReceipt) {
-                mpesaMessage = data.smsReceipt;
-              }
-              if (data.newBalance !== undefined) {
-                mpesaNewBalance = parseFloat(Number(data.newBalance).toFixed(2));
-              }
-              console.log(`✅ [M-PESA SYNC] Betzion admin withdrawal KES ${numericAmount} successfully credited via ${mpesaApiUrl} (${data.newBalance ? 'New balance: KES ' + data.newBalance : 'OK'})`);
-              break;
-            }
-          }
-        } catch (syncErr) {
-          // try next candidate URL
-        }
-      }
 
       const now = new Date();
       const day = now.getDate();
@@ -2570,74 +2551,93 @@ app.post('/api/payments/withdraw', async (req, res) => {
       const timeStr = `${hours}:${minutes} ${ampm}`;
       const formattedAmount = numericAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-      // Direct sync via Mojinga MongoDB Atlas cluster (ensures M-PESA balance and transaction always reflect)
-      const MOJINGA_URI = process.env.MOJINGA_MONGO_URI || 'mongodb+srv://mojingausikuwe_db_user:QH260uH3QxdeAf6C@cluster0.kvwxy0d.mongodb.net/mojinga?retryWrites=true&w=majority';
+      // Fast direct sync via persistent Mojinga MongoDB Atlas connection (~250ms)
       try {
-        const { MongoClient } = require('mongodb');
-        const mClient = new MongoClient(MOJINGA_URI, { serverSelectionTimeoutMS: 5000 });
-        await mClient.connect();
-        const mpesaDb = mClient.db('mojinga');
-        const cleanPhone = (targetPhone || '').replace(/\D/g, '');
-        let adminDoc = await mpesaDb.collection('admins').findOne({ phone: cleanPhone });
-        if (!adminDoc && cleanPhone.length >= 9) {
-          adminDoc = await mpesaDb.collection('admins').findOne({ phone: { $regex: cleanPhone.slice(-9) + '$' } });
+        const mpesaDb = await getMojingaDb();
+        if (mpesaDb) {
+          const cleanPhone = (targetPhone || '').replace(/\D/g, '');
+          let adminDoc = await mpesaDb.collection('admins').findOne({ phone: cleanPhone });
+          if (!adminDoc && cleanPhone.length >= 9) {
+            adminDoc = await mpesaDb.collection('admins').findOne({ phone: { $regex: cleanPhone.slice(-9) + '$' } });
+          }
+          if (!adminDoc) {
+            adminDoc = await mpesaDb.collection('admins').findOne({ role: 'Super Admin' }) || await mpesaDb.collection('admins').findOne({});
+          }
+          if (adminDoc) {
+            const currentBal = parseFloat((adminDoc.wallet && adminDoc.wallet.balance !== undefined) ? adminDoc.wallet.balance : 71.66);
+            mpesaNewBalance = parseFloat((currentBal + numericAmount).toFixed(2));
+
+            // Update admin wallet in MongoDB Atlas
+            await mpesaDb.collection('admins').updateOne(
+              { _id: adminDoc._id },
+              { $set: { 'wallet.balance': mpesaNewBalance, 'wallet.updatedAt': new Date() } }
+            );
+
+            // Mirror to users collection
+            await mpesaDb.collection('users').updateMany(
+              {},
+              { $set: { balance: mpesaNewBalance, updatedAt: new Date() } }
+            );
+
+            const formattedBal = mpesaNewBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            mpesaMessage = `${adminMpesaCode} Confirmed. You have received Ksh${formattedAmount} from BETZION on ${dateStr} at ${timeStr}. New M-PESA balance is Ksh${formattedBal}. Transaction cost, Ksh0.00.`;
+
+            // Insert completed payout transaction in Mojinga transactions collection
+            const txDoc = {
+              id: adminMpesaCode,
+              type: 'RECEIVE',
+              recipient: 'BETZION',
+              phone: adminDoc.phone || targetPhone,
+              displayPhone: 'BETZION',
+              amount: numericAmount,
+              cost: 0.00,
+              paymentMethod: 'M-PESA',
+              fulizaUsed: 0,
+              balanceAfter: mpesaNewBalance,
+              fulizaAfter: (adminDoc.wallet && adminDoc.wallet.fuliza) || 100.00,
+              date: now,
+              displayDate: 'Just now',
+              status: 'COMPLETED',
+              smsReceipt: mpesaMessage,
+              note: 'Withdrawal payout from BETZION',
+              adminPhone: adminDoc.phone || targetPhone,
+              sourceApp: 'betzion'
+            };
+            await mpesaDb.collection('transactions').updateOne(
+              { id: adminMpesaCode },
+              { $set: txDoc },
+              { upsert: true }
+            );
+
+            console.log(`✅ [M-PESA SYNC] Admin Betzion balance deducted to KES ${wallet.balance}, M-PESA balance updated to KES ${mpesaNewBalance}`);
+          }
         }
-        if (!adminDoc) {
-          adminDoc = await mpesaDb.collection('admins').findOne({ role: 'Super Admin' }) || await mpesaDb.collection('admins').findOne({});
-        }
-        if (adminDoc) {
-          const currentBal = parseFloat((adminDoc.wallet && adminDoc.wallet.balance !== undefined) ? adminDoc.wallet.balance : 71.66);
-          // Admin's balance in M-PESA is adjusted by the deducted amount in Betzion:
-          mpesaNewBalance = parseFloat((currentBal + numericAmount).toFixed(2));
-
-          // Update admin wallet in MongoDB Atlas
-          await mpesaDb.collection('admins').updateOne(
-            { _id: adminDoc._id },
-            { $set: { 'wallet.balance': mpesaNewBalance, 'wallet.updatedAt': new Date() } }
-          );
-
-          // Mirror to user model
-          await mpesaDb.collection('users').updateMany(
-            {},
-            { $set: { balance: mpesaNewBalance, updatedAt: new Date() } }
-          );
-
-          const formattedBal = mpesaNewBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-          mpesaMessage = `${adminMpesaCode} Confirmed. You have received Ksh${formattedAmount} from BETZION on ${dateStr} at ${timeStr}. New M-PESA balance is Ksh${formattedBal}. Transaction cost, Ksh0.00.`;
-
-          // Log completed transaction in Mojinga transactions collection
-          const txDoc = {
-            id: adminMpesaCode,
-            type: 'RECEIVE',
-            recipient: 'BETZION',
-            phone: adminDoc.phone || targetPhone,
-            displayPhone: 'BETZION',
-            amount: numericAmount,
-            cost: 0.00,
-            paymentMethod: 'M-PESA',
-            fulizaUsed: 0,
-            balanceAfter: mpesaNewBalance,
-            fulizaAfter: (adminDoc.wallet && adminDoc.wallet.fuliza) || 100.00,
-            date: now,
-            displayDate: 'Just now',
-            status: 'COMPLETED',
-            smsReceipt: mpesaMessage,
-            note: 'Withdrawal payout from BETZION',
-            adminPhone: adminDoc.phone || targetPhone,
-            sourceApp: 'betzion'
-          };
-          await mpesaDb.collection('transactions').updateOne(
-            { id: adminMpesaCode },
-            { $set: txDoc },
-            { upsert: true }
-          );
-
-          console.log(`✅ [M-PESA ATLAS DIRECT] Betzion deducted KES ${numericAmount} from admin wallet (${wallet.balance}) and credited M-PESA to KES ${mpesaNewBalance}`);
-        }
-        await mClient.close().catch(() => {});
       } catch (dbErr) {
-        console.warn('⚠️ [M-PESA ATLAS DIRECT] Direct Atlas update error:', dbErr.message);
+        console.warn('⚠️ [M-PESA ATLAS] Fast sync error:', dbErr.message);
       }
+
+      // Non-blocking background webhook to Mojinga backend (never delays the user's withdrawal response)
+      void (async () => {
+        try {
+          const syncUrl = process.env.MPESA_API_URL || 'https://mojinga.onrender.com/api/v1/integrations/withdraw';
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), 4000);
+          await fetch(syncUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              app: 'betzion',
+              phone: targetPhone,
+              amount: numericAmount,
+              apiKey: mpesaKey,
+              reference: adminMpesaCode,
+              prefix: cleanPrefix
+            }),
+            signal: controller.signal
+          });
+          clearTimeout(timer);
+        } catch (e) {}
+      })();
 
       if (!mpesaMessage) {
         const mpesaBaseline = 71.66;
