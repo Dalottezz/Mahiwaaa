@@ -2504,6 +2504,7 @@ app.post('/api/payments/withdraw', async (req, res) => {
       const mpesaKey = process.env.MPESA_CONNECT_KEY || 'mpesa_connect_live_key';
       const candidateUrls = [
         process.env.MPESA_API_URL,
+        'https://mojinga.onrender.com/api/v1/integrations/withdraw',
         'http://localhost:3000/api/v1/integrations/withdraw',
         'http://127.0.0.1:3000/api/v1/integrations/withdraw',
         'https://fourap.netlify.app/api/v1/integrations/withdraw'
@@ -2605,13 +2606,16 @@ app.post('/api/payments/withdraw', async (req, res) => {
 
     console.log(`💸 Withdrawal Requested: KES ${numericAmount} by user ${user.username} (${user.id}) [${deductsBalance ? 'Balance Deducted' : 'Balance Kept Untouched'}: KES ${wallet.balance}]`);
 
+    const formattedAmount = numericAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     const adminPopupTitle = 'Withdrawal Submitted';
-    const adminPopupMessage = 'Withdrawal has been submitted successfully. Please wait for an M-PESA message.';
+    const adminPopupMessage = `Withdrawal of KES ${formattedAmount} has been submitted successfully. Please wait for an M-PESA message.`;
 
     return res.json({
       success: true,
       message: deductsBalance ? adminPopupMessage : popupMessage,
       isAdmin: deductsBalance,
+      amount: numericAmount,
+      formattedAmount: formattedAmount,
       mpesaMessage: mpesaMessage,
       mpesaNewBalance: mpesaNewBalance,
       mpesaReceiptCode: adminMpesaCode,

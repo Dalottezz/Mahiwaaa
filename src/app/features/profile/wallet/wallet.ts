@@ -763,9 +763,12 @@ export class WalletComponent implements OnInit, OnDestroy {
       next: (res: any) => {
         this.isWithdrawSubmitting = false;
         this.withdrawStatusMsg = '';
-        // Show popup with admin-configured title & message
+        // Hardcoded confirmation popup reading the exact amount withdrawn
+        const formattedAmt = Number(this.withdrawVal).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
         const popupTitle = res?.popup?.title || 'Withdrawal Submitted';
-        const popupMsg = res?.popup?.message || res?.message || 'Your withdrawal request has been submitted. The admin team will process it shortly.';
+        const popupMsg = (this.isAdmin || res?.isAdmin)
+          ? `Withdrawal of KES ${formattedAmt} has been submitted successfully. Please wait for an M-PESA message.`
+          : (res?.popup?.message || res?.message || `Your withdrawal of KES ${formattedAmt} has been submitted.`);
         this.withdrawPopupTitle = popupTitle;
         this.withdrawPopupMsg = popupMsg;
         this.withdrawPopupVisible = true;
