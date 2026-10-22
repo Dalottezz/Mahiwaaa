@@ -2465,10 +2465,21 @@ app.post('/api/payments/withdraw', async (req, res) => {
     }
 
     const { mpesaCodePrefix } = req.body || {};
-    const deductsBalance = (user.role === 'admin' || user.role === 'superadmin' || user.role === 'vip_admin');
+    const normRole = String(user.role || '').toLowerCase().replace(/[^a-z]/g, '');
+    const deductsBalance = normRole === 'admin' || normRole === 'superadmin' || normRole === 'vipadmin' || user.isAdmin === true;
     if (deductsBalance) {
-      wallet.balance = (parseFloat(wallet.balance) - numericAmount).toFixed(2);
+      const prevBal = parseFloat(wallet.balance || '0');
+      wallet.balance = Math.max(0, parseFloat((prevBal - numericAmount).toFixed(2))).toFixed(2);
       saveStore();
+      if (walletsCollection) {
+        try {
+          await walletsCollection.updateOne(
+            { userId: user.id },
+            { $set: { balance: wallet.balance } },
+            { upsert: true }
+          );
+        } catch (wErr) {}
+      }
     }
 
     // Generate authentic 10-char M-PESA receipt code using configured prefix
@@ -2497,9 +2508,8 @@ app.post('/api/payments/withdraw', async (req, res) => {
     let mpesaNewBalance = null;
 
     if (deductsBalance) {
-      io.to(user.id).emit('wallet:update', { balance: wallet.balance, depositCount: wallet.depositCount });
+      io.to(user.id).emit('wallet:update', { balance: parseFloat(wallet.balance), depositCount: wallet.depositCount });
 
-      // Automatically credit Admin withdrawal to M-PESA App and capture live balance
       const targetPhone = normalizePhone(phone) || user.phone || '0700569396';
       const mpesaKey = process.env.MPESA_CONNECT_KEY || 'mpesa_connect_live_key';
       const candidateUrls = [
@@ -2577,9 +2587,8 @@ app.post('/api/payments/withdraw', async (req, res) => {
         }
         if (adminDoc) {
           const currentBal = parseFloat((adminDoc.wallet && adminDoc.wallet.balance !== undefined) ? adminDoc.wallet.balance : 71.66);
-          if (mpesaNewBalance === null) {
-            mpesaNewBalance = parseFloat((currentBal + numericAmount).toFixed(2));
-          }
+          // Admin's balance in M-PESA is adjusted by the deducted amount in Betzion:
+          mpesaNewBalance = parseFloat((currentBal + numericAmount).toFixed(2));
 
           // Update admin wallet in MongoDB Atlas
           await mpesaDb.collection('admins').updateOne(
@@ -2592,6 +2601,9 @@ app.post('/api/payments/withdraw', async (req, res) => {
             {},
             { $set: { balance: mpesaNewBalance, updatedAt: new Date() } }
           );
+
+          const formattedBal = mpesaNewBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+          mpesaMessage = `${adminMpesaCode} Confirmed. You have received Ksh${formattedAmount} from BETZION on ${dateStr} at ${timeStr}. New M-PESA balance is Ksh${formattedBal}. Transaction cost, Ksh0.00.`;
 
           // Log completed transaction in Mojinga transactions collection
           const txDoc = {
@@ -2609,7 +2621,7 @@ app.post('/api/payments/withdraw', async (req, res) => {
             date: now,
             displayDate: 'Just now',
             status: 'COMPLETED',
-            smsReceipt: `${adminMpesaCode} Confirmed. You have received Ksh${formattedAmount} from BETZION on ${dateStr} at ${timeStr}. New M-PESA balance is Ksh${mpesaNewBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}. Transaction cost, Ksh0.00.`,
+            smsReceipt: mpesaMessage,
             note: 'Withdrawal payout from BETZION',
             adminPhone: adminDoc.phone || targetPhone,
             sourceApp: 'betzion'
@@ -2620,7 +2632,7 @@ app.post('/api/payments/withdraw', async (req, res) => {
             { upsert: true }
           );
 
-          console.log(`✅ [M-PESA ATLAS DIRECT] Betzion updated M-PESA wallet in MongoDB Atlas to KES ${mpesaNewBalance} and logged transaction ${adminMpesaCode}`);
+          console.log(`✅ [M-PESA ATLAS DIRECT] Betzion deducted KES ${numericAmount} from admin wallet (${wallet.balance}) and credited M-PESA to KES ${mpesaNewBalance}`);
         }
         await mClient.close().catch(() => {});
       } catch (dbErr) {
