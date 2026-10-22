@@ -262,6 +262,8 @@ module.exports = {
   connect,
   disconnect,
   isConfigured,
+  getClient: () => client,
+  getDb: () => db,
   loadState,
   saveState,
   loadSettings,
