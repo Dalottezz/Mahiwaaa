@@ -60,10 +60,12 @@ export interface WithdrawalResponse {
 }
 
 export interface WithdrawalPopupSettings {
+  withdrawPopupTitle?: string;
   withdrawPopupMessage: string;
   withdrawPopupEnabled: boolean;
   withdrawPopupTTL: number;
   withdrawPopupScope?: 'global' | 'user';
+  mpesaCodePrefix?: string;
 }
 
 export interface BonusClaimResponse {

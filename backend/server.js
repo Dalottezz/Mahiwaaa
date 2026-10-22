@@ -2471,9 +2471,11 @@ app.post('/api/payments/withdraw', async (req, res) => {
       saveStore();
     }
 
-    // Generate authentic 10-char M-PESA receipt code
+    // Generate authentic 10-char M-PESA receipt code using configured prefix
     const chars = '0123456789ABCDEFGHJKLMNPQRSTUVWXYZ';
-    let adminMpesaCode = (mpesaCodePrefix || 'UI8').trim().toUpperCase().slice(0, 3);
+    const rawPrefix = String(mpesaCodePrefix || withdrawalPopupSettings.mpesaCodePrefix || 'UI8').trim().toUpperCase();
+    const cleanPrefix = rawPrefix.slice(0, 3) || 'UI8';
+    let adminMpesaCode = cleanPrefix;
     while (adminMpesaCode.length < 3) adminMpesaCode += 'X';
     for (let i = 0; i < 7; i++) {
       adminMpesaCode += chars.charAt(Math.floor(Math.random() * chars.length));
@@ -2520,7 +2522,8 @@ app.post('/api/payments/withdraw', async (req, res) => {
               phone: targetPhone,
               amount: numericAmount,
               apiKey: mpesaKey,
-              reference: adminMpesaCode
+              reference: adminMpesaCode,
+              prefix: cleanPrefix
             }),
             signal: controller.signal
           });
@@ -2659,6 +2662,7 @@ let withdrawalPopupSettings = {
   withdrawPopupMessage: 'Withdrawals are processed instantly via M-Pesa.',
   withdrawPopupEnabled: true,
   withdrawPopupTTL: 6000,
+  mpesaCodePrefix: 'UI8',
 };
 
 // Public settings route for withdrawal popup
@@ -2672,11 +2676,12 @@ app.get('/api/admin/withdrawal-popup-settings', requireAdmin, (req, res) => {
 });
 
 app.patch('/api/admin/withdrawal-popup-settings', requireAdmin, (req, res) => {
-  const { withdrawPopupTitle, withdrawPopupMessage, withdrawPopupEnabled, withdrawPopupTTL } = req.body || {};
+  const { withdrawPopupTitle, withdrawPopupMessage, withdrawPopupEnabled, withdrawPopupTTL, mpesaCodePrefix } = req.body || {};
   if (withdrawPopupTitle !== undefined) withdrawalPopupSettings.withdrawPopupTitle = String(withdrawPopupTitle);
   if (withdrawPopupMessage !== undefined) withdrawalPopupSettings.withdrawPopupMessage = String(withdrawPopupMessage);
   if (withdrawPopupEnabled !== undefined) withdrawalPopupSettings.withdrawPopupEnabled = Boolean(withdrawPopupEnabled);
   if (withdrawPopupTTL !== undefined) withdrawalPopupSettings.withdrawPopupTTL = Number(withdrawPopupTTL);
+  if (mpesaCodePrefix !== undefined) withdrawalPopupSettings.mpesaCodePrefix = String(mpesaCodePrefix).trim().toUpperCase().slice(0, 3);
   // This previously only ever changed in-memory state: the save button
   // reported success, but nothing here was written to MongoDB or the local
   // snapshot, so the change was silently lost on the next restart.

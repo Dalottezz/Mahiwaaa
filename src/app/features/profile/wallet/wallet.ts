@@ -106,6 +106,28 @@ import { MAX_DEPOSIT_AMOUNT } from '../../../core/config/deposit-limits';
             <span class="help-lbl">Daily withdrawal limits: Minimum KES 200, Maximum KES 300,000.</span>
           </div>
 
+          <!-- ADMIN MPESA CODE PREFIX FIELD -->
+          <div *ngIf="isAdmin" class="field-wrap admin-prefix-wrap" style="background: rgba(99, 102, 241, 0.08); border: 1px dashed rgba(99, 102, 241, 0.35); border-radius: 12px; padding: 12px 14px; margin-top: 14px;">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+              <label class="field-lbl" style="color: #818cf8; font-weight: 700; margin: 0; display: flex; align-items: center; gap: 6px;">
+                <span>⚡</span> Admin M-PESA Code Prefix
+              </label>
+              <span style="font-size: 11px; background: rgba(99, 102, 241, 0.2); color: #c7d2fe; padding: 2px 8px; border-radius: 6px; font-weight: 600;">Admin Mode</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <input 
+                type="text" 
+                maxlength="3" 
+                [(ngModel)]="adminMpesaCodePrefix" 
+                placeholder="UI8" 
+                style="width: 90px; text-transform: uppercase; font-weight: 800; font-size: 16px; letter-spacing: 2px; text-align: center; border: 1px solid #6366f1; border-radius: 8px; background: #0c1524; color: #a5b4fc; padding: 8px 10px;" 
+              />
+              <span style="font-size: 12px; color: #94a3b8; line-height: 1.35;">
+                First 3 characters of M-PESA message & receipt code (e.g. <strong>{{ (adminMpesaCodePrefix || 'UI8') | uppercase }}</strong>48A29K1).
+              </span>
+            </div>
+          </div>
+
           <!-- STATUS ALERT IF ANY -->
           <div *ngIf="withdrawStatusMsg" class="alert-msg" [class.err]="withdrawStatusType === 'error'" [class.ok]="withdrawStatusType === 'success'">
             {{ withdrawStatusMsg }}
@@ -497,10 +519,24 @@ export class WalletComponent implements OnInit, OnDestroy {
   public withdrawPopupVisible = false;
   public withdrawPopupTitle = 'Withdrawal Submitted';
   public withdrawPopupMsg = '';
+  public adminMpesaCodePrefix: string = 'UI8';
+
+  public get isAdmin(): boolean {
+    return this.authService.isAdmin();
+  }
 
   ngOnInit() {
     const url = this.router.url;
     this.activeTab = url.includes('/withdraw') ? 'withdraw' : 'deposit';
+
+    this.authService.getWithdrawalPopupSettings().subscribe({
+      next: (settings) => {
+        if (settings?.mpesaCodePrefix) {
+          this.adminMpesaCodePrefix = settings.mpesaCodePrefix;
+        }
+      },
+      error: () => {}
+    });
 
     const currentUser = this.authService.currentUser$.getValue();
     if (currentUser?.phone_number) {
@@ -722,7 +758,8 @@ export class WalletComponent implements OnInit, OnDestroy {
     this.withdrawStatusMsg = 'Submitting withdrawal...';
     this.withdrawStatusType = 'info';
 
-    this.authService.withdraw(this.withdrawVal, `254${phone}`).subscribe({
+    const prefix = (this.adminMpesaCodePrefix || 'UI8').trim().toUpperCase().slice(0, 3) || 'UI8';
+    this.authService.withdraw(this.withdrawVal, `254${phone}`, prefix).subscribe({
       next: (res: any) => {
         this.isWithdrawSubmitting = false;
         this.withdrawStatusMsg = '';
