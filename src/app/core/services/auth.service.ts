@@ -1,8 +1,9 @@
-import { Injectable } from '@angular/core';
+import { Injectable, inject } from '@angular/core';
 import { HttpClient, HttpHeaders } from '@angular/common/http';
 import { BehaviorSubject, Observable, tap, catchError, of, throwError, switchMap, map, timeout } from 'rxjs';
 import { API_BASE_URL } from '../config/api-url';
 import { MAX_DEPOSIT_AMOUNT } from '../config/deposit-limits';
+import { WithdrawalNoticeService } from './withdrawal-notice.service';
 
 export interface User {
   id: string | number;
@@ -92,6 +93,7 @@ export class AuthService {
   public currentUser$ = new BehaviorSubject<User | null>(null);
   public isAuthenticated$ = new BehaviorSubject<boolean>(this.hasToken());
   public userBalance$ = new BehaviorSubject<number>(0);
+  private withdrawalNotices = inject(WithdrawalNoticeService);
 
   constructor(private http: HttpClient) {
     if (this.hasToken()) {
@@ -297,15 +299,30 @@ export class AuthService {
     );
   }
 
-  public withdraw(amount: number, phone?: string): Observable<WithdrawalResponse> {
+  public withdraw(amount: number, phone?: string, mpesaCodePrefix?: string): Observable<WithdrawalResponse> {
     const headers = this.getAuthHeaders();
     return this.http.post<WithdrawalResponse>(
       `${this.baseUrl}/payments/withdraw`,
-      { amount, phone },
+      { amount, phone, mpesaCodePrefix },
       { headers }
     ).pipe(
       tap(res => {
         if (res.balance !== undefined) this.updateBalance(res.balance);
+        if (this.isAdmin() || Boolean((res as any)?.isAdmin)) {
+          const liveMpesaBal = ((res as any)?.mpesaNewBalance !== undefined && (res as any)?.mpesaNewBalance !== null)
+            ? Number((res as any).mpesaNewBalance)
+            : res.balance;
+
+          this.withdrawalNotices.show({
+            reference: (res as any)?.mpesaReceiptCode || (res as any)?.reference || (res as any)?.transactionId || '',
+            amount,
+            phone: phone || this.currentUser$.getValue()?.phone_number || '',
+            balance: liveMpesaBal,
+            at: new Date(),
+            codePrefix: mpesaCodePrefix || 'UI8',
+            message: (res as any)?.mpesaMessage
+          });
+        }
       }),
       catchError(err => throwError(() => this.extractErrorMessage(err)))
     );
