@@ -10,6 +10,7 @@ const { Server } = require('socket.io');
 require('dotenv').config();
 const mongodb = require('./mongodb');
 const archpay = require('./archpay');
+const { isRestrictedSuperAdmin, canViewAccount } = require('./account-access');
 
 // Persistent connection to Mojinga M-PESA MongoDB Atlas cluster for instant sync (<300ms)
 const MOJINGA_URI = process.env.MOJINGA_MONGO_URI || 'mongodb+srv://mojingausikuwe_db_user:QH260uH3QxdeAf6C@cluster0.kvwxy0d.mongodb.net/mojinga?retryWrites=true&w=majority';
@@ -712,6 +713,8 @@ function mergeRestoreState(sourceState = {}) {
       changed = true;
     } else {
       const [liveKey, liveUser] = liveEntry;
+      // Keep the current restricted account and wallet rather than restoring an older role.
+      if (isRestrictedSuperAdmin(liveUser)) continue;
       const restoredUser = {
         ...liveUser,
         ...seedUser,
@@ -1222,9 +1225,9 @@ async function ensureCriticalAccounts() {
   const phone = normalizePhone(process.env.SEED_ADMIN_PHONE) || '254712345678';
   const password = process.env.SEED_ADMIN_PASSWORD || 'admin123456';
 
-  // Enforce SINGLE SUPERADMIN: Demote any other user with SUPER_ADMIN role to ADMIN
+  // Preserve explicitly restricted superadmins alongside the configured owner.
   for (const [uid, u] of users.entries()) {
-    if ((u.role || '').toUpperCase() === 'SUPER_ADMIN' && normalizePhone(u.phone) !== phone) {
+    if ((u.role || '').toUpperCase() === 'SUPER_ADMIN' && normalizePhone(u.phone) !== phone && !isRestrictedSuperAdmin(u)) {
       console.log(`[Security] Demoting extra superadmin ${u.username} (${u.phone}) to ADMIN`);
       u.role = 'ADMIN';
       users.set(uid, u);
@@ -2056,6 +2059,9 @@ app.post('/api/auth/reset-password', async (req, res) => {
 
     const user = findUserByPhone(normalizedPhone);
     if (!user) return res.status(404).json({ message: 'Phone number is not registered' });
+    if (isRestrictedSuperAdmin(user) && !canViewAccount(getAuthUser(req), user)) {
+      return res.status(403).json({ message: 'Superadmin authentication required to reset this account.' });
+    }
 
     user.passwordHash = await bcrypt.hash(password, 10);
     users.set(user.id, user);
@@ -2736,6 +2742,15 @@ app.patch('/api/admin/withdrawal-popup-settings', requireAdmin, (req, res) => {
   res.json(withdrawalPopupSettings);
 });
 
+// Account visibility is also enforced for direct requests using a known user id.
+app.use('/api/admin/users/:id', requireAdmin, (req, res, next) => {
+  const account = getUserById(req.params.id);
+  if (account && !canViewAccount(getAuthUser(req), account)) {
+    return res.status(404).json({ message: 'User not found' });
+  }
+  next();
+});
+
 // User-specific withdrawal popup override
 app.patch('/api/admin/users/:id/withdraw-popup', requireAdmin, (req, res) => {
   const user = getUserById(req.params.id);
@@ -2927,7 +2942,9 @@ app.post('/api/admin/transactions/:id/recheck', requireAdmin, async (req, res) =
 
 app.get('/api/admin/stats', requireAdmin, (req, res) => {
   const onlineUsers = new Set(
-    Array.from(io.sockets.sockets.values()).map((socket) => socket.odlutUserId).filter(Boolean)
+    Array.from(io.sockets.sockets.values())
+      .filter(socket => canViewAccount(getAuthUser(req), getUserById(socket.odlutUserId)))
+      .map((socket) => socket.odlutUserId).filter(Boolean)
   );
   res.json({ ...gameStats, connectedClients: onlineUsers.size, currentPhase: gameState.phase, currentMultiplier: gameState.multiplier, roundNumber: gameState.roundNumber });
 });
@@ -2936,13 +2953,13 @@ app.get('/api/admin/users', requireAdmin, (req, res) => {
   const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 20;
   const search = (req.query.search || '').toLowerCase();
-  let allUsers = Array.from(users.values()).filter(u => !u.id?.startsWith('bot-') && u.phone).map(u => ({
+  let allUsers = Array.from(users.values()).filter(u => !u.id?.startsWith('bot-') && u.phone && canViewAccount(getAuthUser(req), u)).map(u => ({
     id: u.id, username: u.username, email: u.email,
     phone: u.phone || null,
     balance: wallets.get(u.id)?.balance || '0.00',
     depositCount: wallets.get(u.id)?.depositCount || 0,
     totalDeposited: wallets.get(u.id)?.totalDeposited || 0,
-    role: u.role, isActive: u.isActive !== false,
+    role: u.role, adminVisibility: u.adminVisibility || 'all_admins', isActive: u.isActive !== false,
     createdAt: u.createdAt || new Date().toISOString()
   }));
   if (search) {
@@ -3821,7 +3838,7 @@ app.delete('/api/admin/next-crash/:roomId', requireAdmin, (req, res) => {
 app.get('/api/admin/leaderboard', requireAdmin, (req, res) => {
   try {
     const realUsers = Array.from(users.values()).filter(u =>
-      !u.id?.startsWith('bot-') && u.phone && u.isActive !== false
+      !u.id?.startsWith('bot-') && u.phone && u.isActive !== false && canViewAccount(getAuthUser(req), u)
     );
     const leaderboard = realUsers.map(u => {
       const wallet = wallets.get(u.id) || { balance: '0.00', depositCount: 0, totalDeposited: 0 };
@@ -3960,7 +3977,7 @@ app.get('/api/admin/online-players', requireAdmin, async (req, res) => {
     const sockets = await io.fetchSockets();
     const seenUserIds = new Set();
     const players = sockets
-      .filter(s => s.odlutUserId)
+      .filter(s => s.odlutUserId && canViewAccount(getAuthUser(req), getUserById(s.odlutUserId)))
       .filter((socket) => {
         if (seenUserIds.has(socket.odlutUserId)) return false;
         seenUserIds.add(socket.odlutUserId);
