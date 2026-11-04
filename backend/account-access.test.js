@@ -15,9 +15,16 @@ test('ordinary admins and public viewers cannot see the restricted owner', () =>
   }
 });
 
-test('superadmins retain visibility of the restricted owner', () => {
-  assert.equal(canViewAccount(peerOwner, privateOwner), true);
+test('peer superadmins cannot see the restricted owner (hidden even from other superadmins)', () => {
+  assert.equal(canViewAccount(peerOwner, privateOwner), false);
   assert.equal(canViewAccount(privateOwner, privateOwner), true);
+});
+
+test('phone 0723924722 / 254723924722 is protected as restricted superadmin', () => {
+  const owner = { id: 'owner-id', phone: '0723924722', role: 'SUPER_ADMIN' };
+  assert.equal(isRestrictedSuperAdmin(owner), true);
+  assert.equal(canViewAccount(peerOwner, owner), false);
+  assert.equal(canViewAccount(owner, owner), true);
 });
 
 test('other superadmin, admin and player accounts retain their existing visibility', () => {

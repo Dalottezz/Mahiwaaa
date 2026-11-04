@@ -256,6 +256,28 @@ async function deleteAllTransactions() {
     console.error('Failed to delete transactions from MongoDB:', err.message);
     return false;
   }
+async function getUserByPhoneOrLogin(login, phone) {
+  if (!isConfigured()) return null;
+  try {
+    const connected = await connect();
+    if (!connected || !usersCollection) return null;
+    const cleanLogin = (login || '').toString().trim();
+    const cleanPhone = (phone || '').toString().trim();
+    const query = {
+      $or: [
+        { id: cleanLogin },
+        { username: cleanLogin },
+        { email: cleanLogin.toLowerCase() },
+        ...(cleanPhone ? [{ phone: cleanPhone }] : []),
+        ...(cleanLogin ? [{ phone: cleanLogin }] : []),
+      ]
+    };
+    const user = await usersCollection.findOne(query);
+    return user || null;
+  } catch (err) {
+    console.error('Failed to lookup user in MongoDB:', err.message);
+    return null;
+  }
 }
 
 module.exports = {
@@ -271,4 +293,5 @@ module.exports = {
   loadTransactions,
   saveTransactions,
   deleteAllTransactions,
+  getUserByPhoneOrLogin,
 };
