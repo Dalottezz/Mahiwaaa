@@ -1,0 +1,23 @@
+@use './app/features/game/aviator/aviator-reference';
+@use './app/features/game/aviator/aviator-chat-reference';
+@use './app/features/game/aviator/aviator-history-reference';
+
+// Betzion keeps its own wallet action, even on the reference board.
+#aviator-board.reference-interface {
+  .game-deposit-btn {
+    display: inline-flex;
+    min-width: 64px;
+    height: 25px;
+    padding-inline: 9px;
+    border: 1px solid #ffcf21;
+    border-radius: 6px;
+    background: #ffc928;
+    color: #15120a;
+  }
+  .game-deposit-btn:hover { background: #ffda39; border-color: #ffda39; }
+  button.live-banner { width: 100%; cursor: pointer; text-align: left; }
+  .play-limit-notice { margin: 0; padding: 8px 12px; color: #ffd895; background: #302513; border: 1px solid #d99832; border-radius: 8px; }
+  .cashout-overlay-stack { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); display: grid; gap: 6px; z-index: 5; max-width: 96%; }
+  .cashout-overlay-stack .cashout-overlay-banner { position: relative; inset: auto; width: 100%; transform: none; }
+  .chat-system-warning { width: 100%; }
+}

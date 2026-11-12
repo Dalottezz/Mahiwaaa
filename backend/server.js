@@ -10,7 +10,7 @@ const { Server } = require('socket.io');
 require('dotenv').config();
 const mongodb = require('./mongodb');
 const archpay = require('./archpay');
-const { isRestrictedSuperAdmin, canViewAccount } = require('./account-access');
+const { isRestrictedSuperAdmin, canViewAccount, isOnlinePresenceEligible } = require('./account-access');
 
 // Persistent connection to Mojinga M-PESA MongoDB Atlas cluster for instant sync (<300ms)
 const MOJINGA_URI = process.env.MOJINGA_MONGO_URI || 'mongodb+srv://mojingausikuwe_db_user:QH260uH3QxdeAf6C@cluster0.kvwxy0d.mongodb.net/mojinga?retryWrites=true&w=majority';
@@ -2991,7 +2991,12 @@ app.post('/api/admin/transactions/:id/recheck', requireAdmin, async (req, res) =
 app.get('/api/admin/stats', requireAdmin, (req, res) => {
   const onlineUsers = new Set(
     Array.from(io.sockets.sockets.values())
-      .filter(socket => canViewAccount(getAuthUser(req), getUserById(socket.odlutUserId)))
+      .filter((socket) => {
+        if (!socket.odlutUserId) return false;
+        const user = getUserById(socket.odlutUserId);
+        if (!user || !isOnlinePresenceEligible(user)) return false;
+        return canViewAccount(getAuthUser(req), user);
+      })
       .map((socket) => socket.odlutUserId).filter(Boolean)
   );
   res.json({ ...gameStats, connectedClients: onlineUsers.size, currentPhase: gameState.phase, currentMultiplier: gameState.multiplier, roundNumber: gameState.roundNumber });
@@ -3890,7 +3895,7 @@ app.delete('/api/admin/next-crash/:roomId', requireAdmin, (req, res) => {
 app.get('/api/admin/leaderboard', requireAdmin, (req, res) => {
   try {
     const realUsers = Array.from(users.values()).filter(u =>
-      !u.id?.startsWith('bot-') && u.phone && u.isActive !== false && canViewAccount(getAuthUser(req), u)
+      !u.id?.startsWith('bot-') && u.phone && u.isActive !== false && isOnlinePresenceEligible(u) && canViewAccount(getAuthUser(req), u)
     );
     const leaderboard = realUsers.map(u => {
       const wallet = wallets.get(u.id) || { balance: '0.00', depositCount: 0, totalDeposited: 0 };
@@ -3945,7 +3950,15 @@ app.post('/api/admin/rain', requireAdmin, async (req, res) => {
     if (!rainAmount || rainAmount <= 0) return res.status(400).json({ message: 'Invalid rain amount' });
 
     const sockets = await io.fetchSockets();
-    const onlineUserIds = [...new Set(sockets.map(s => s.odlutUserId).filter(Boolean))];
+    const onlineUserIds = [...new Set(
+      sockets
+        .map(s => s.odlutUserId)
+        .filter(id => {
+          if (!id) return false;
+          const user = getUserById(id);
+          return user && isOnlinePresenceEligible(user);
+        })
+    )];
 
     if (onlineUserIds.length === 0) return res.status(400).json({ message: 'No players online to receive rain' });
 
@@ -4029,7 +4042,12 @@ app.get('/api/admin/online-players', requireAdmin, async (req, res) => {
     const sockets = await io.fetchSockets();
     const seenUserIds = new Set();
     const players = sockets
-      .filter(s => s.odlutUserId && canViewAccount(getAuthUser(req), getUserById(s.odlutUserId)))
+      .filter((s) => {
+        if (!s.odlutUserId) return false;
+        const user = getUserById(s.odlutUserId);
+        if (!user || !isOnlinePresenceEligible(user)) return false;
+        return canViewAccount(getAuthUser(req), user);
+      })
       .filter((socket) => {
         if (seenUserIds.has(socket.odlutUserId)) return false;
         seenUserIds.add(socket.odlutUserId);

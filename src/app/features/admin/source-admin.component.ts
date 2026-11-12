@@ -2050,7 +2050,13 @@ export class SourceAdminComponent implements OnInit, OnDestroy {
     if (this.onlinePlayersRequestInFlight) return;
     this.onlinePlayersRequestInFlight = true;
     this.get<{ players: OnlinePlayer[] }>('/admin/online-players').subscribe({
-      next: data => { this.onlinePlayers = data.players || []; this.markLiveMonitorUpdated(); },
+      next: data => {
+        this.onlinePlayers = (data.players || []).filter(p => {
+          const role = (p.role || '').toUpperCase();
+          return role !== 'ADMIN' && role !== 'SUPER_ADMIN';
+        });
+        this.markLiveMonitorUpdated();
+      },
       error: () => this.onlinePlayersRequestInFlight = false,
       complete: () => this.onlinePlayersRequestInFlight = false,
     });

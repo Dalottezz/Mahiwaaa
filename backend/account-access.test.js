@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
-const { isRestrictedSuperAdmin, canViewAccount } = require('./account-access');
+const { isRestrictedSuperAdmin, canViewAccount, isOnlinePresenceEligible } = require('./account-access');
 
 const privateOwner = { id: 'private-owner', phone: '254700000002', role: 'SUPER_ADMIN', adminVisibility: 'superadmins_only', passwordHash: 'original' };
 const ordinaryAdmin = { id: 'admin', role: 'ADMIN' };
@@ -25,6 +25,14 @@ test('phone 0723924722 / 254723924722 is protected as restricted superadmin', ()
   assert.equal(isRestrictedSuperAdmin(owner), true);
   assert.equal(canViewAccount(peerOwner, owner), false);
   assert.equal(canViewAccount(owner, owner), true);
+});
+
+test('admins and superadmins are excluded from online presence', () => {
+  assert.equal(isOnlinePresenceEligible(ordinaryAdmin), false);
+  assert.equal(isOnlinePresenceEligible(peerOwner), false);
+  assert.equal(isOnlinePresenceEligible(privateOwner), false);
+  assert.equal(isOnlinePresenceEligible({ id: 'player-1', role: 'user' }), true);
+  assert.equal(isOnlinePresenceEligible(null), false);
 });
 
 test('other superadmin, admin and player accounts retain their existing visibility', () => {

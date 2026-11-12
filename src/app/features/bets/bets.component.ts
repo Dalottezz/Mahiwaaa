@@ -1,10 +1,15 @@
 import { CommonModule } from '@angular/common';
-import { Component, OnDestroy, OnInit, computed, inject, signal } from '@angular/core';
+import { Component, ElementRef, HostListener, OnDestroy, OnInit, computed, inject, signal, viewChild } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { Router } from '@angular/router';
+import { Router, RouterLink } from '@angular/router';
 import { Subscription } from 'rxjs';
 import { AuthService, User } from '../../core/services/auth.service';
+import { PresenceService } from '../../core/services/presence.service';
 import { MAX_PLAY_BALANCE, PLAY_LIMIT_MESSAGE } from '../../core/config/play-limits';
+import {
+  dashboardBanners, gameCategories, gameTabs, gameTiles, navRail,
+  primaryNav, quickLinks, sideTiles, topLeagues,
+} from './dashboard-content';
 
 interface FootballMatch {
   id: string;
@@ -27,18 +32,30 @@ interface BetSlipSelection {
   odds: number;
 }
 
+interface AviatorBet {
+  amount: number;
+  status: string;
+  payout?: number;
+}
+
 @Component({
   selector: 'app-bets',
   standalone: true,
-  imports: [CommonModule, FormsModule],
+  imports: [CommonModule, FormsModule, RouterLink],
   templateUrl: './bets.component.html',
   styleUrl: './bets.component.css'
 })
 export class BetsComponent implements OnInit, OnDestroy {
-  readonly router = inject(Router);
+  private readonly router = inject(Router);
   private readonly auth = inject(AuthService);
+  private readonly presence = inject(PresenceService);
   private readonly subscriptions: Subscription[] = [];
-  private oddsTickerTimer: any = null;
+  private bannerTimer?: ReturnType<typeof setInterval>;
+  private oddsTickerTimer?: ReturnType<typeof setInterval>;
+  private toastTimer?: ReturnType<typeof setTimeout>;
+  private betsRequest?: Subscription;
+  private readonly matchesSection = viewChild<ElementRef<HTMLElement>>('matches');
+  private readonly gamesSection = viewChild<ElementRef<HTMLElement>>('games');
 
   readonly currentUser = signal<User | null>(null);
   readonly userBalance = signal(0);
@@ -48,18 +65,50 @@ export class BetsComponent implements OnInit, OnDestroy {
   readonly selections = signal<BetSlipSelection[]>([]);
   readonly showProfileMenu = signal(false);
   readonly mobileMenuOpen = signal(false);
+  readonly showMobileSlipDrawer = signal(false);
   readonly showMyBetsModal = signal(false);
   readonly showAccountModal = signal(false);
   readonly myBetsTab = signal<'active' | 'settled'>('active');
+  readonly aviatorBets = signal<AviatorBet[]>([]);
+  readonly betsStatus = signal('');
+  readonly searchOpen = signal(false);
+  readonly matchQuery = signal('');
+  readonly dataSaverEnabled = signal(false);
+  readonly currentBannerIndex = signal(0);
+  readonly activeGameCategory = signal('crash');
+  readonly activeGameTab = signal('crash');
+  readonly slipMode = signal<'real' | 'simulate'>('real');
+  readonly betNotice = signal('');
+  readonly toastMessage = signal('');
+  readonly aviatorMultipliers = signal<number[]>([]);
+  readonly isPrivileged = computed(() => ['admin', 'superadmin'].includes(this.currentUser()?.role ?? ''));
+  readonly displayedBets = computed(() =>
+    this.aviatorBets().filter(bet => (bet.status === 'active') === (this.myBetsTab() === 'active')),
+  );
 
-  stake = 20;
+  readonly stake = signal<number | null>(20);
   betslipCode = '';
 
-  readonly promoImages = [
-    { title: 'WELCOME TO BETZION', tag: 'KSH 3,500 WELCOME BONUS!', img: 'https://images.unsplash.com/photo-1508098682722-e99c43a406b2?auto=format&fit=crop&w=1200&q=80' },
-    { title: 'BETZION AVIATOR', tag: 'MULTIPLIER UP TO 10,000X WEEKLY', img: 'https://images.unsplash.com/photo-1518609878373-06d740f60d8b?auto=format&fit=crop&w=1200&q=80' },
-    { title: 'HIGHEST FOOTBALL ODDS', tag: 'FASTEST M-PESA PAYOUTS', img: 'https://images.unsplash.com/photo-1522778119026-d647f0596c20?auto=format&fit=crop&w=1200&q=80' }
-  ];
+  readonly heroBanners = dashboardBanners;
+  readonly primaryNav = primaryNav;
+  readonly navRail = navRail;
+  readonly sideTiles = sideTiles;
+  readonly gameTabs = gameTabs;
+  readonly gameCategories = gameCategories;
+  readonly topLeagues = topLeagues;
+  readonly quickLinks = quickLinks;
+  readonly visibleGames = computed(() => {
+    switch (this.activeGameCategory()) {
+      case 'crash':
+        return gameTiles;
+      case 'exclusive':
+        return gameTiles.filter(tile => tile.brandTitle);
+      case 'virtuals':
+        return sideTiles.filter(tile => tile.id === 'instant-virtuals');
+      default:
+        return [];
+    }
+  });
 
   readonly sportsList = [
     { id: 'soccer', name: 'Soccer', count: 179 },
@@ -119,23 +168,36 @@ export class BetsComponent implements OnInit, OnDestroy {
   ]);
 
   readonly visibleMatches = computed(() => {
+    if (this.selectedSport() !== 'soccer') return [];
     const filter = this.activeFilter();
-    return this.matchesList().filter(match => filter === 'all' || match.state === filter);
+    const query = this.matchQuery().trim().toLowerCase();
+    return this.matchesList().filter(match =>
+      (filter === 'all' || match.state === filter) &&
+      `${match.home} ${match.away} ${match.league}`.toLowerCase().includes(query),
+    );
   });
 
   readonly combinedOdds = computed(() => Number(this.selections()
     .reduce((total, selection) => total * selection.odds, 1)
     .toFixed(2)));
 
-  readonly potentialReturn = computed(() => Number((Math.max(0, this.stake || 0) * this.combinedOdds()).toFixed(2)));
+  readonly potentialReturn = computed(() => Math.max(0, this.stake() ?? 0) * this.combinedOdds());
+
+  trackMatch(_index: number, match: FootballMatch): string {
+    return match.id;
+  }
 
   get isAuthenticated(): boolean { return this.auth.hasToken(); }
 
   ngOnInit(): void {
     this.subscriptions.push(
       this.auth.currentUser$.subscribe(user => this.currentUser.set(user)),
-      this.auth.userBalance$.subscribe(balance => this.userBalance.set(balance))
+      this.auth.userBalance$.subscribe(balance => this.userBalance.set(balance)),
+      this.presence.walletUpdates$.subscribe(({ balance, depositCount }) => this.auth.updateBalance(balance, depositCount)),
+      this.presence.roundHistory$.subscribe(history => this.aviatorMultipliers.set(history.slice(0, 13))),
     );
+    this.dataSaverEnabled.set(localStorage.getItem('betzion-dashboard-data-saver') === 'true');
+    this.resumeBanner();
 
     this.oddsTickerTimer = setInterval(() => {
       this.matchesList.update(list =>
@@ -155,27 +217,170 @@ export class BetsComponent implements OnInit, OnDestroy {
 
   ngOnDestroy(): void {
     this.subscriptions.forEach(subscription => subscription.unsubscribe());
-    if (this.oddsTickerTimer) clearInterval(this.oddsTickerTimer);
+    this.betsRequest?.unsubscribe();
+    clearInterval(this.oddsTickerTimer);
+    clearTimeout(this.toastTimer);
+    this.pauseBanner();
   }
 
   setNavTab(tab: string): void {
     this.activeNavTab.set(tab);
-    if (tab === 'aviator') {
-      this.goToAviator();
-    } else if (tab === 'live') {
-      this.activeFilter.set('live');
-    } else if (tab === 'home') {
-      this.activeFilter.set('all');
+    this.closeAllDrawers();
+    switch (tab) {
+      case 'home':
+        this.resetMatches();
+        this.activeGameTab.set('crash');
+        this.activeGameCategory.set('crash');
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+        break;
+      case 'aviator':
+        this.goToAviator();
+        break;
+      case 'sports':
+      case 'soccer':
+      case 'live':
+      case 'livescore':
+        this.resetMatches(tab === 'live' || tab === 'livescore' ? 'live' : 'all');
+        this.scrollTo(this.matchesSection());
+        break;
+      case 'basketball':
+      case 'esoccer':
+        this.selectSport(tab);
+        break;
+      case 'games':
+      case 'crash':
+        this.setGameCategory('crash');
+        this.scrollTo(this.gamesSection());
+        break;
+      case 'slots':
+      case 'virtuals':
+      case 'casino':
+        this.setGameCategory(tab === 'casino' ? 'slots' : tab);
+        this.scrollTo(this.gamesSection());
+        break;
+      case 'nare':
+        this.openGame(tab);
+        break;
+      default: {
+        const item = [...this.primaryNav, ...this.navRail, ...this.quickLinks].find(link => link.id === tab);
+        this.showToast(`${item?.label ?? 'This section'} is currently unavailable.`);
+      }
     }
   }
 
   selectSport(sportId: string): void {
+    this.resetMatches();
     this.selectedSport.set(sportId);
+    this.closeMobileMenu();
+    this.scrollTo(this.matchesSection());
+  }
+
+  openSearch(): void {
+    this.closeAllDrawers();
+    this.resetMatches();
+    this.searchOpen.set(true);
+    this.scrollTo(this.matchesSection());
+  }
+
+  private resetMatches(filter: 'all' | 'live' = 'all'): void {
+    this.selectedSport.set('soccer');
+    this.activeFilter.set(filter);
+    this.matchQuery.set('');
+    this.searchOpen.set(false);
+  }
+
+  private scrollTo(section: ElementRef<HTMLElement> | undefined): void {
+    section?.nativeElement.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  scrollRail(rail: HTMLElement, direction: -1 | 1): void {
+    rail.scrollBy({ left: direction * rail.clientWidth * 0.75, behavior: 'smooth' });
+  }
+
+  setGameCategory(id: string): void {
+    this.activeGameTab.set('crash');
+    this.activeGameCategory.set(id);
+  }
+
+  setGameTab(id: string): void {
+    this.activeGameTab.set(id);
+    if (id === 'betbuilder') this.setNavTab('sports');
+    if (id === 'league' || id === 'poly') this.setNavTab(id);
+  }
+
+  openGame(id: string): void {
+    this.closeAllDrawers();
+    if (id === 'aviator') {
+      this.goToAviator();
+    } else if (id === 'sports') {
+      this.setNavTab('sports');
+    } else if (id === 'wallet') {
+      this.goToWallet();
+    } else {
+      const game = [...gameTiles, ...sideTiles].find(tile => tile.id === id);
+      this.showToast(`${game?.name ?? 'This game'} is currently unavailable.`);
+    }
+  }
+
+  setBanner(index: number): void {
+    this.currentBannerIndex.set(index);
+  }
+
+  nextBanner(): void {
+    this.setBanner((this.currentBannerIndex() + 1) % this.heroBanners.length);
+  }
+
+  prevBanner(): void {
+    this.setBanner((this.currentBannerIndex() + this.heroBanners.length - 1) % this.heroBanners.length);
+  }
+
+  pauseBanner(): void {
+    clearInterval(this.bannerTimer);
+  }
+
+  resumeBanner(): void {
+    this.pauseBanner();
+    if (!this.dataSaverEnabled() && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      this.bannerTimer = setInterval(() => this.nextBanner(), 4500);
+    }
+  }
+
+  toggleDataSaver(): void {
+    this.dataSaverEnabled.update(enabled => !enabled);
+    localStorage.setItem('betzion-dashboard-data-saver', String(this.dataSaverEnabled()));
+    this.resumeBanner();
+  }
+
+  toggleMobileSlipDrawer(): void {
+    const shouldOpen = !this.showMobileSlipDrawer();
+    this.closeAllDrawers();
+    this.showMobileSlipDrawer.set(shouldOpen);
+  }
+
+  @HostListener('document:keydown.escape')
+  closeAllDrawers(): void {
+    this.mobileMenuOpen.set(false);
+    this.showMobileSlipDrawer.set(false);
+    this.showProfileMenu.set(false);
+    this.showAccountModal.set(false);
+    this.closeMyBetsModal();
+  }
+
+  dismissToast(): void {
+    clearTimeout(this.toastTimer);
+    this.toastMessage.set('');
+  }
+
+  private showToast(message: string): void {
+    this.dismissToast();
+    this.toastMessage.set(message);
+    this.toastTimer = setTimeout(() => this.dismissToast(), 3500);
   }
 
   toggleMobileMenu(): void {
-    this.showProfileMenu.set(false);
-    this.mobileMenuOpen.update(open => !open);
+    const shouldOpen = !this.mobileMenuOpen();
+    this.closeAllDrawers();
+    this.mobileMenuOpen.set(shouldOpen);
   }
 
   closeMobileMenu(): void {
@@ -183,22 +388,37 @@ export class BetsComponent implements OnInit, OnDestroy {
   }
 
   toggleProfileMenu(): void {
-    this.showProfileMenu.update(value => !value);
+    const shouldOpen = !this.showProfileMenu();
+    this.closeAllDrawers();
+    this.showProfileMenu.set(shouldOpen);
   }
 
   openMyBetsModal(): void {
-    this.showProfileMenu.set(false);
-    this.closeMobileMenu();
+    this.closeAllDrawers();
+    if (!this.isAuthenticated) {
+      this.goToLogin();
+      return;
+    }
     this.showMyBetsModal.set(true);
+    this.myBetsTab.set('active');
+    this.aviatorBets.set([]);
+    this.betsStatus.set('Loading Aviator bets…');
+    this.betsRequest = this.auth.getTransactionHistory().subscribe({
+      next: ({ bets }) => {
+        this.aviatorBets.set(bets ?? []);
+        this.betsStatus.set('');
+      },
+      error: () => this.betsStatus.set('Could not load Aviator bets. Close and reopen to try again.'),
+    });
   }
 
   closeMyBetsModal(): void {
+    this.betsRequest?.unsubscribe();
     this.showMyBetsModal.set(false);
   }
 
   openAccountModal(): void {
-    this.showProfileMenu.set(false);
-    this.closeMobileMenu();
+    this.closeAllDrawers();
     if (this.isAuthenticated) {
       this.showAccountModal.set(true);
     } else {
@@ -215,30 +435,32 @@ export class BetsComponent implements OnInit, OnDestroy {
     this.router.navigate(['/play']);
   }
 
-  goToMyBets(): void {
-    this.openMyBetsModal();
-  }
-
-  goToAccount(): void {
-    this.openAccountModal();
+  goToAdmin(): void {
+    this.closeAllDrawers();
+    this.router.navigate(['/admin']);
   }
 
   goToWallet(): void {
-    this.showProfileMenu.set(false);
-    this.closeMobileMenu();
-    localStorage.setItem('walletReturnUrl', '/bets');
-    this.router.navigate(['/wallet'], { state: { returnUrl: '/bets' } });
+    this.openWalletRoute('wallet');
   }
 
   openDeposit(): void {
-    this.showProfileMenu.set(false);
-    this.closeMobileMenu();
+    this.openWalletRoute('deposit');
+  }
+
+  openWithdraw(): void {
+    this.openWalletRoute('withdraw');
+  }
+
+  private openWalletRoute(route: 'wallet' | 'deposit' | 'withdraw'): void {
+    this.closeAllDrawers();
     localStorage.setItem('walletReturnUrl', '/bets');
-    this.router.navigate(['/deposit'], { state: { returnUrl: '/bets' } });
+    this.router.navigate(['/', route], { state: { returnUrl: '/bets' } });
   }
 
   toggleSelection(match: FootballMatch, outcome: 'home' | 'draw' | 'away'): void {
     if (!this.isAuthenticated) { this.goToLogin(); return; }
+    this.setSlipMode('simulate');
     const outcomeLabel = outcome === 'home' ? match.home : outcome === 'draw' ? 'Draw' : match.away;
     const odds = outcome === 'home' ? match.homeOdds : outcome === 'draw' ? match.drawOdds : match.awayOdds;
 
@@ -264,25 +486,38 @@ export class BetsComponent implements OnInit, OnDestroy {
 
   clearSlip(): void {
     this.selections.set([]);
+    this.betNotice.set('');
   }
 
   loadBetslipByCode(): void {
-    if (!this.betslipCode.trim()) return;
-    const matches = this.matchesList();
-    if (matches.length > 0) {
-      this.toggleSelection(matches[0], 'home');
-      this.betslipCode = '';
-    }
+    this.betNotice.set(this.betslipCode.trim()
+      ? 'Booking codes are unavailable for demo matches.'
+      : 'Enter a booking code.');
+  }
+
+  setSlipMode(mode: 'real' | 'simulate'): void {
+    this.slipMode.set(mode);
+    this.betNotice.set(mode === 'real' ? 'Real sports bets are currently unavailable. You can simulate a bet with demo matches.' : '');
   }
 
   placeDemoBet(): void {
     if (this.userBalance() > MAX_PLAY_BALANCE) {
-      alert(PLAY_LIMIT_MESSAGE);
+      this.betNotice.set(PLAY_LIMIT_MESSAGE);
+      return;
+    }
+    if (this.slipMode() === 'real') {
+      this.setSlipMode('real');
       return;
     }
     if (!this.selections().length) return;
-    alert(`Bet placed! Total odds: ${this.combinedOdds()}`);
-    this.selections.set([]);
+    const stake = this.stake();
+    if (stake === null || !Number.isFinite(stake) || stake < 10) {
+      this.betNotice.set('Enter a simulated stake of at least KES 10.');
+      return;
+    }
+    this.betNotice.set(`Simulation complete. Possible return: KES ${this.potentialReturn().toLocaleString('en-KE', {
+      minimumFractionDigits: 2, maximumFractionDigits: 2,
+    })}.`);
   }
 
   goToLogin(): void { this.router.navigate(['/login']); }

@@ -827,7 +827,7 @@ export class AuthLandingComponent implements OnInit, OnDestroy {
     if (this.authService.hasToken()) {
       this.authService.loadCurrentUser().subscribe(res => {
         if (res?.user) {
-          const dest = res.user.role === 'admin' ? '/admin' : '/bets';
+          const dest = res.user.role === 'admin' || res.user.role === 'superadmin' ? '/admin' : '/bets';
           this.router.navigateByUrl(this.returnUrl() || dest);
         }
       });
@@ -956,7 +956,7 @@ export class AuthLandingComponent implements OnInit, OnDestroy {
       next: (res) => {
         this.completeLoginAttempt();
         const role = (res.user?.role || '').toLowerCase();
-        const dest = (role === 'admin' || role === 'super_admin' || role === 'superadmin') ? '/admin' : '/play';
+        const dest = (role === 'admin' || role === 'super_admin' || role === 'superadmin') ? '/admin' : '/bets';
         this.router.navigateByUrl(this.returnUrl() || dest);
       },
       error: (err) => {

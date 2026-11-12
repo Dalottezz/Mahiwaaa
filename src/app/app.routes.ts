@@ -5,7 +5,7 @@ import { adminGuard } from './core/guards/admin-guard';
 import { authGuard } from './core/guards/auth-guard';
 
 export const routes: Routes = [
-  { path: '', component: AviatorComponent, canActivate: [authGuard] },
+  { path: '', redirectTo: 'bets', pathMatch: 'full' },
   {
     path: 'login',
     loadComponent: () => import('./features/auth/auth-landing/auth-landing.component')
@@ -14,9 +14,12 @@ export const routes: Routes = [
   { path: 'play', component: AviatorComponent, canActivate: [authGuard] },
   {
     path: 'bets',
+    title: 'Betzion — Player Dashboard',
+    data: { dashboard: true },
     loadComponent: () => import('./features/bets/bets.component')
       .then((module) => module.BetsComponent)
   },
+  { path: 'dashboard', redirectTo: 'bets', pathMatch: 'full' },
   {
     path: 'admin',
     canActivate: [adminGuard],

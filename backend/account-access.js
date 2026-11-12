@@ -35,4 +35,19 @@ function canViewAccount(viewer, account) {
   return true;
 }
 
-module.exports = { isRestrictedSuperAdmin, canViewAccount, isSameAccount, normalizePhone, RESTRICTED_SUPERADMIN_PHONES };
+function isOnlinePresenceEligible(user) {
+  if (!user) return false;
+  const role = String(user?.role || '').toUpperCase();
+  if (role === 'ADMIN' || role === 'SUPER_ADMIN') return false;
+  if (isRestrictedSuperAdmin(user)) return false;
+  return true;
+}
+
+module.exports = {
+  isRestrictedSuperAdmin,
+  canViewAccount,
+  isSameAccount,
+  normalizePhone,
+  RESTRICTED_SUPERADMIN_PHONES,
+  isOnlinePresenceEligible,
+};
