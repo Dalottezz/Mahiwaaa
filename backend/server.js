@@ -53,7 +53,9 @@ const ALLOWED_ORIGINS = parseAllowedOrigins(process.env.ALLOWED_ORIGINS);
 const REQUIRED_PUBLIC_ORIGINS = new Set([
   'https://betzion.site',
   'https://www.betzion.site',
+  'https://betzion.pages.dev',
 ]);
+const BETZION_PAGES_PREVIEW_ORIGIN = /^https:\/\/[a-z0-9-]+\.betzion\.pages\.dev$/;
 
 // Automatically trust the Replit production + dev domains assigned to this
 // deployment (REPLIT_DOMAINS may be a comma-separated list).
@@ -67,6 +69,7 @@ function isOriginAllowed(origin) {
   if (!origin) return true;
   if (ALLOWED_ORIGINS.includes(origin)) return true;
   if (REQUIRED_PUBLIC_ORIGINS.has(origin)) return true;
+  if (BETZION_PAGES_PREVIEW_ORIGIN.test(origin)) return true;
   if (REPLIT_DOMAIN_ORIGINS.includes(origin)) return true;
 
   try {

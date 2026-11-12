@@ -47,8 +47,9 @@ Thumbs.db
 .env.*
 !.env.example
 
-# Local Angular tooling state
+# Local build tooling state
 /.angular
+/.wrangler/
 
 # Stray downloaded project copy — not part of this app
 /Downloads
