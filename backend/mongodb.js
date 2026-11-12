@@ -256,6 +256,8 @@ async function deleteAllTransactions() {
     console.error('Failed to delete transactions from MongoDB:', err.message);
     return false;
   }
+}
+
 async function getUserByPhoneOrLogin(login, phone) {
   if (!isConfigured()) return null;
   try {
