@@ -21,26 +21,28 @@ services:
         sync: false
       - key: ALLOWED_ORIGINS
         sync: false
-      - key: ARCHPAY_API_BASE
-        value: https://pay.archietech.app/api/v1
-      - key: ARCHPAY_API_KEY
+      - key: PAYHERO_API_BASE
+        value: https://backend.payhero.co.ke/api/v2
+      - key: PAYHERO_API_USERNAME
         sync: false
-      - key: ARCHPAY_ACCOUNT_ID
+      - key: PAYHERO_API_PASSWORD
         sync: false
-      - key: ARCHPAY_CHANNEL_ID
+      - key: PAYHERO_BASIC_AUTH_TOKEN
         sync: false
-      - key: ARCHPAY_CALLBACK_URL
+      - key: PAYHERO_CHANNEL_ID
         sync: false
-      - key: ARCHPAY_CALLBACK_TOKEN
+      - key: PAYHERO_CALLBACK_URL
+        value: https://api.betzion.site/api/payments/payhero/callback
+      - key: PAYHERO_CALLBACK_TOKEN
         sync: false
-      - key: ARCHPAY_PENDING_PAYMENT_EXPIRY_MS
+      - key: PAYHERO_TEST_MODE
+        value: "false"
+      - key: PAYHERO_PENDING_PAYMENT_EXPIRY_MS
         value: "300000"
-      - key: ARCHPAY_LATE_CONFIRMATION_WINDOW_MS
+      - key: PAYHERO_LATE_CONFIRMATION_WINDOW_MS
         value: "1800000"
       - key: MIN_DEPOSIT_AMOUNT
         value: "999"
-      - key: MAX_DEPOSIT_AMOUNT
-        value: "1999"
       - key: SEED_ADMIN_PHONE
         sync: false
       - key: SEED_ADMIN_PASSWORD

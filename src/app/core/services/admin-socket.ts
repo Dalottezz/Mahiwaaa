@@ -86,6 +86,19 @@ export interface AdminTransactionUpdate {
   updatedAt?: string;
 }
 
+export interface NextCrashRoomState {
+  roomId: number;
+  armedCrashPoint: number | null;
+  currentRoundCrashPoint?: number | null;
+  phase?: string;
+  roundNumber?: number;
+}
+
+export interface NextCrashOverridePayload {
+  rooms: NextCrashRoomState[];
+  limits?: { min: number; max: number };
+}
+
 const EMPTY_NEXT_ROUND: AdminNextRound = {
   roundId: null,
   nextRoundId: null,
@@ -148,6 +161,7 @@ export class AdminSocketService {
   public withdrawalsUpdated$ = new BehaviorSubject<AdminRealtimeEvent | null>(null);
   public userUpdated$ = new BehaviorSubject<AdminRealtimeEvent | null>(null);
   public activityUpdated$ = new BehaviorSubject<AdminRealtimeEvent | null>(null);
+  public nextCrashOverride$ = new BehaviorSubject<NextCrashOverridePayload | null>(null);
 
   public connect(token: string): void {
     if (this.socket) {
@@ -267,6 +281,12 @@ export class AdminSocketService {
     this.socket.on('activity_updated', (data: AdminRealtimeEvent) => {
       console.log(`[${new Date().toISOString()}] [PAYMENT_LOG] Admin socket received: activity_updated`, data);
       this.activityUpdated$.next(data);
+    });
+
+    this.socket.on('next_crash_override', (data: NextCrashOverridePayload) => {
+      if (data && Array.isArray(data.rooms)) {
+        this.nextCrashOverride$.next(data);
+      }
     });
 
     this.socket.on('disconnect', (reason: string) => {

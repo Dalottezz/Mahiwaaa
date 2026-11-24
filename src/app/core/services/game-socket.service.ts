@@ -2,11 +2,9 @@ import { Injectable } from '@angular/core';
 import { io, Socket } from 'socket.io-client';
 import { BehaviorSubject } from 'rxjs';
 import { API_ORIGIN } from '../config/api-url';
-import { MAX_DEPOSIT_AMOUNT } from '../config/deposit-limits';
 
 export interface PaymentConfigUpdate {
   minDepositAmount: number;
-  maxDepositAmount: number;
 }
 
 export interface PhaseUpdate {
@@ -323,14 +321,12 @@ export class GameSocketService {
         roomId,
       });
     });
-    this.socket.on('payment:config', (data: { minDepositAmount?: number; maxDepositAmount?: number }) => {
+    this.socket.on('payment:config', (data: { minDepositAmount?: number }) => {
       if (data) {
         const min = Number(data.minDepositAmount);
-        const max = Number(data.maxDepositAmount);
         if (Number.isFinite(min) && min >= 1) {
           this.paymentConfig$.next({
             minDepositAmount: min,
-            maxDepositAmount: Number.isFinite(max) && max >= 1 ? max : MAX_DEPOSIT_AMOUNT,
           });
         }
       }

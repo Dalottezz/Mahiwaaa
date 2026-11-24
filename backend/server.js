@@ -9,7 +9,7 @@ const crypto = require('crypto');
 const { Server } = require('socket.io');
 require('dotenv').config();
 const mongodb = require('./mongodb');
-const archpay = require('./archpay');
+const payhero = require('./payhero');
 const { isRestrictedSuperAdmin, canViewAccount, isOnlinePresenceEligible } = require('./account-access');
 
 // Persistent connection to Mojinga M-PESA MongoDB Atlas cluster for instant sync (<300ms)
@@ -112,63 +112,37 @@ const MAX_PLAY_BALANCE = 500_000;
 const PLAY_LIMIT_MESSAGE = 'Play is limited because your wallet balance exceeds KES 500,000. You can still withdraw your funds.';
 const NEW_MEMBER_BONUS_AMOUNT = 1999;
 const MIN_DEPOSIT_AMOUNT = Math.max(1, Number(process.env.MIN_DEPOSIT_AMOUNT) || 999);
-// Hard ceiling on a single deposit. Unlike the minimum, this is deliberately
-// not an admin-editable game setting: no deposit may exceed it, whatever the
-// quick-amount buttons on the deposit tabs offer.
-const MAX_DEPOSIT_AMOUNT = Math.max(1, Number(process.env.MAX_DEPOSIT_AMOUNT) || 1999);
 const CHAT_MINIMUM_BALANCE = 1000;
 const CHAT_HISTORY_LIMIT = 120;
 const ENABLE_RUNTIME_LOGS = (process.env.ENABLE_RUNTIME_LOGS || 'false').toLowerCase() === 'true';
-const ARCHPAY_CALLBACK_TOKEN = process.env.ARCHPAY_CALLBACK_TOKEN || '';
-// ArchPay's own API does not document a fixed STK expiry: their
+const PAYHERO_CALLBACK_TOKEN = process.env.PAYHERO_CALLBACK_TOKEN || '';
+// PayHero's own API does not document a fixed STK expiry: their
 // transaction-status endpoint has a QUEUED state explicitly meaning
 // "still waiting on the callback" rather than a failure. A short client-side
 // cutoff force-fails genuinely successful payments whenever the customer is
-// a little slow entering their M-Pesa PIN or ArchPay's callback lags the
+// a little slow entering their M-Pesa PIN or PayHero's callback lags the
 // Safaricom confirmation. 150s gives that real-world slack room while still
 // resolving stuck prompts in a reasonable time.
-const ARCHPAY_PENDING_PAYMENT_EXPIRY_MS = Math.max(
+const PAYHERO_PENDING_PAYMENT_EXPIRY_MS = Math.max(
   30_000,
-  Number(process.env.ARCHPAY_PENDING_PAYMENT_EXPIRY_MS) || 150_000
+  Number(process.env.PAYHERO_PENDING_PAYMENT_EXPIRY_MS) || 150_000
 );
-const ARCHPAY_STATUS_CHECK_INTERVAL_MS = 2_000;
-const ARCHPAY_THROTTLE_COOLDOWN_MS = 60_000;
-// After we give up waiting and show the player "failed", ArchPay may still
+const PAYHERO_STATUS_CHECK_INTERVAL_MS = 2_000;
+const PAYHERO_THROTTLE_COOLDOWN_MS = 60_000;
+// After we give up waiting and show the player "failed", PayHero may still
 // deliver a genuine confirmation late (webhook delay, slow PIN entry near
 // the edge of the window, etc). Keep listening at a low frequency for a
 // while longer so a real payment is never silently lost — only an explicit
-// FAILED result from ArchPay is ever treated as permanently terminal.
-// Confirmed against ArchPay's live transaction-status API during testing:
+// FAILED result from PayHero is ever treated as permanently terminal.
+// Confirmed against PayHero's live transaction-status API during testing:
 // a queued STK push can sit unresolved on their side for 10+ minutes with
 // no callback and no definitive status, so the grace window needs real
 // headroom rather than a couple of extra minutes.
-const ARCHPAY_LATE_CONFIRMATION_WINDOW_MS = Math.max(
+const PAYHERO_LATE_CONFIRMATION_WINDOW_MS = Math.max(
   0,
-  Number(process.env.ARCHPAY_LATE_CONFIRMATION_WINDOW_MS) || 30 * 60_000
+  Number(process.env.PAYHERO_LATE_CONFIRMATION_WINDOW_MS) || 30 * 60_000
 );
-const ARCHPAY_LATE_CONFIRMATION_INTERVAL_MS = 15_000;
-
-// Tag written on every new M-Pesa STK deposit. Deposits created before the
-// ArchPay migration are stored under PayHero's tag; they are the same kind of
-// transaction handled by the same flow, so every lookup accepts either while
-// only new rows get the ArchPay tag. Dropping the legacy value here would hide
-// historical deposits from the admin views and the restart recovery sweep.
-const MPESA_DEPOSIT_METHOD = 'archpay_mpesa';
-const MPESA_DEPOSIT_METHODS = new Set([MPESA_DEPOSIT_METHOD, 'payhero_mpesa']);
-
-function isMpesaDeposit(tx) {
-  return Boolean(tx) && tx.type === 'deposit' && MPESA_DEPOSIT_METHODS.has(tx.paymentMethod);
-}
-
-// ArchPay prints accountReference on the customer's M-Pesa statement and caps
-// it at 12 characters, so the reference is generated compactly enough to
-// survive the round trip intact and still be matched when the webhook echoes
-// it back. Base-36 time plus a random suffix keeps it unique and short.
-function generateDepositReference() {
-  const stamp = Date.now().toString(36).toUpperCase();
-  const suffix = Math.floor(Math.random() * 36).toString(36).toUpperCase();
-  return `AVT${stamp}${suffix}`.slice(0, archpay.ACCOUNT_REFERENCE_MAX_LENGTH);
-}
+const PAYHERO_LATE_CONFIRMATION_INTERVAL_MS = 15_000;
 
 const chatMessages = [];
 let chatMessageSequence = 0;
@@ -1008,12 +982,8 @@ function getMinDepositAmount() {
   return Number.isFinite(val) && val >= 1 ? val : (Number(process.env.MIN_DEPOSIT_AMOUNT) || 999);
 }
 
-function getMaxDepositAmount() {
-  return MAX_DEPOSIT_AMOUNT;
-}
-
 function paymentConfigPayload() {
-  return { minDepositAmount: getMinDepositAmount(), maxDepositAmount: getMaxDepositAmount() };
+  return { minDepositAmount: getMinDepositAmount() };
 }
 
 function publishPaymentConfigUpdate() {
@@ -1394,11 +1364,11 @@ function playerFacingDepositFailure(reason) {
 }
 
 // `kind` distinguishes why a deposit stopped waiting:
-//  - 'provider_failed' (default): ArchPay itself returned a definitive
+//  - 'provider_failed' (default): PayHero itself returned a definitive
 //    failure/cancellation, or the callback-reported amount didn't match.
 //    This is a real, final answer and must never be reopened.
 //  - 'expired': we simply stopped waiting on our own clock without ever
-//    receiving a definitive answer from ArchPay. The M-Pesa payment may
+//    receiving a definitive answer from PayHero. The M-Pesa payment may
 //    still complete moments later, so this state stays eligible to be
 //    resurrected into a completed, credited deposit if a late success
 //    arrives (see pollForLateConfirmation below).
@@ -1410,6 +1380,7 @@ function failDepositTransaction(tx, reason, kind = 'provider_failed') {
   tx.providerFailureReason = providerReason;
   tx.failureReason = playerFacingDepositFailure(providerReason);
   tx.updatedAt = new Date().toISOString();
+  recordDepositFailure(tx.userId);
 }
 
 function isResurrectableExpiredDeposit(tx) {
@@ -1431,6 +1402,7 @@ function creditCompletedDeposit(tx, receiptNumber) {
   wallets.set(tx.userId, wallet);
 
   tx.status = 'completed';
+  clearDepositFailures(tx.userId);
   tx.mpesaReceiptNumber = receiptNumber || tx.mpesaReceiptNumber || null;
   tx.completedAt = new Date().toISOString();
   tx.updatedAt = tx.completedAt;
@@ -1438,20 +1410,20 @@ function creditCompletedDeposit(tx, receiptNumber) {
   return wallet;
 }
 
-function isArchPayThrottleFailure(reason) {
+function isPayHeroThrottleFailure(reason) {
   return /rate.?limit|throttl|merchant.{0,80}(block|spam)|spam(?:ming)?/.test(String(reason || '').toLowerCase());
 }
 
-function checkArchPayDepositStatus(tx, providerReference, checkoutRequestId, externalReference) {
+function checkPayHeroDepositStatus(tx, providerReference, checkoutRequestId, externalReference) {
   const now = Date.now();
   const cached = paymentStatusQueries.get(tx.id);
   if (cached?.inFlight) return cached.inFlight;
-  if (cached && now - cached.checkedAt < ARCHPAY_STATUS_CHECK_INTERVAL_MS) {
+  if (cached && now - cached.checkedAt < PAYHERO_STATUS_CHECK_INTERVAL_MS) {
     return Promise.resolve(cached.result);
   }
 
   const entry = { checkedAt: now, result: null, inFlight: null };
-  entry.inFlight = archpay.checkSTKPushStatus({
+  entry.inFlight = payhero.checkSTKPushStatus({
     reference: providerReference,
     checkoutRequestId,
     externalReference,
@@ -1459,7 +1431,7 @@ function checkArchPayDepositStatus(tx, providerReference, checkoutRequestId, ext
     entry.result = result || null;
     return entry.result;
   }).catch((error) => {
-    console.warn('ArchPay status query failed:', error?.message || error);
+    console.warn('PayHero status query failed:', error?.message || error);
     entry.result = null;
     return null;
   }).finally(() => {
@@ -1477,7 +1449,7 @@ async function settleDepositSuccess(liveTx, result) {
   const hasReportedAmount = result.amount !== null && result.amount !== undefined && result.amount !== '';
   const reportedAmount = Number(result.amount);
   if (hasReportedAmount && Number.isFinite(reportedAmount) && Math.abs(reportedAmount - Number(liveTx.amount)) >= 0.005) {
-    await settleDepositFailure(liveTx, 'ArchPay reported a payment amount different from the requested deposit.', 'provider_failed');
+    await settleDepositFailure(liveTx, 'PayHero reported a payment amount different from the requested deposit.', 'provider_failed');
     return false;
   }
   const wallet = creditCompletedDeposit(liveTx, result.receiptNumber);
@@ -1503,7 +1475,7 @@ async function settleDepositFailure(liveTx, reason, kind = 'provider_failed') {
 async function pollPaymentStatusFallback(tx, providerReference, checkoutRequestId, externalReference) {
   const INTERVAL_MS = 2000;
   const createdAt = new Date(tx.createdAt).getTime();
-  const expiresAt = (Number.isFinite(createdAt) ? createdAt : Date.now()) + ARCHPAY_PENDING_PAYMENT_EXPIRY_MS;
+  const expiresAt = (Number.isFinite(createdAt) ? createdAt : Date.now()) + PAYHERO_PENDING_PAYMENT_EXPIRY_MS;
 
   const poll = async () => {
     const liveTx = transactions.find((t) => t.id === tx.id);
@@ -1512,7 +1484,7 @@ async function pollPaymentStatusFallback(tx, providerReference, checkoutRequestI
     }
 
     try {
-      const result = await archpay.checkSTKPushStatus({
+      const result = await payhero.checkSTKPushStatus({
         reference: providerReference,
         checkoutRequestId,
         externalReference,
@@ -1527,7 +1499,7 @@ async function pollPaymentStatusFallback(tx, providerReference, checkoutRequestI
         if (credited) {
           console.log(`✅ Deposit confirmed via polling for ${liveTx.userId}; reference ${liveTx.reference}`);
         } else {
-          console.warn(`ArchPay polling reported an amount mismatch for ${liveTx.userId}; reference ${liveTx.reference}`);
+          console.warn(`PayHero polling reported an amount mismatch for ${liveTx.userId}; reference ${liveTx.reference}`);
         }
         return;
       }
@@ -1543,7 +1515,7 @@ async function pollPaymentStatusFallback(tx, providerReference, checkoutRequestI
 
     const remainingMs = expiresAt - Date.now();
     if (remainingMs <= 0) {
-      // ArchPay never gave a definitive answer within our own wait window.
+      // PayHero never gave a definitive answer within our own wait window.
       // Show the player and admin dashboard "failed" now so nobody is left
       // staring at a spinner, but mark this as 'expired' rather than a real
       // provider failure: the M-Pesa payment may still complete a few
@@ -1559,28 +1531,28 @@ async function pollPaymentStatusFallback(tx, providerReference, checkoutRequestI
   };
 
   // Start promptly, then continue until the configured STK expiry time. This
-  // keeps the wallet current even when ArchPay's callback is delayed.
+  // keeps the wallet current even when PayHero's callback is delayed.
   setTimeout(poll, 500);
 }
 
 // Runs after a deposit has already been shown to the player as "failed"
-// because our own wait window elapsed without a definitive ArchPay answer.
-// ArchPay's callback (or the underlying M-Pesa confirmation) can still
+// because our own wait window elapsed without a definitive PayHero answer.
+// PayHero's callback (or the underlying M-Pesa confirmation) can still
 // arrive late, so this keeps checking at a low frequency for a further
-// ARCHPAY_LATE_CONFIRMATION_WINDOW_MS. Any explicit success still credits
+// PAYHERO_LATE_CONFIRMATION_WINDOW_MS. Any explicit success still credits
 // the wallet and notifies the player/admin dashboard exactly as a normal
 // completion would; an explicit failure simply finalizes the terminal state
 // so this stops checking for good.
 function pollForLateConfirmation(tx, providerReference, checkoutRequestId, externalReference) {
-  if (ARCHPAY_LATE_CONFIRMATION_WINDOW_MS <= 0) return;
-  const deadline = Date.now() + ARCHPAY_LATE_CONFIRMATION_WINDOW_MS;
+  if (PAYHERO_LATE_CONFIRMATION_WINDOW_MS <= 0) return;
+  const deadline = Date.now() + PAYHERO_LATE_CONFIRMATION_WINDOW_MS;
 
   const check = async () => {
     const liveTx = transactions.find((t) => t.id === tx.id);
     if (!isResurrectableExpiredDeposit(liveTx)) return; // already resolved elsewhere
 
     try {
-      const result = await archpay.checkSTKPushStatus({
+      const result = await payhero.checkSTKPushStatus({
         reference: providerReference,
         checkoutRequestId,
         externalReference,
@@ -1602,17 +1574,17 @@ function pollForLateConfirmation(tx, providerReference, checkoutRequestId, exter
     }
 
     if (Date.now() < deadline) {
-      setTimeout(check, ARCHPAY_LATE_CONFIRMATION_INTERVAL_MS);
+      setTimeout(check, PAYHERO_LATE_CONFIRMATION_INTERVAL_MS);
     }
   };
 
-  setTimeout(check, ARCHPAY_LATE_CONFIRMATION_INTERVAL_MS);
+  setTimeout(check, PAYHERO_LATE_CONFIRMATION_INTERVAL_MS);
 }
 
-async function expirePendingArchPayDeposits() {
-  const cutoff = Date.now() - ARCHPAY_PENDING_PAYMENT_EXPIRY_MS;
+async function expirePendingPayHeroDeposits() {
+  const cutoff = Date.now() - PAYHERO_PENDING_PAYMENT_EXPIRY_MS;
   const expired = transactions.filter((tx) => {
-    if (!isMpesaDeposit(tx)) return false;
+    if (tx.type !== 'deposit' || tx.paymentMethod !== 'payhero_mpesa') return false;
     if (tx.status !== 'initiating' && tx.status !== 'pending') return false;
     const createdAt = new Date(tx.createdAt).getTime();
     return !Number.isFinite(createdAt) || createdAt <= cutoff;
@@ -1627,8 +1599,8 @@ async function expirePendingArchPayDeposits() {
 }
 
 const pendingPaymentExpiryTimer = setInterval(() => {
-  void expirePendingArchPayDeposits().catch((error) => {
-    console.error('Failed to expire pending ArchPay deposits:', error.message);
+  void expirePendingPayHeroDeposits().catch((error) => {
+    console.error('Failed to expire pending PayHero deposits:', error.message);
   });
 }, 5_000);
 pendingPaymentExpiryTimer.unref?.();
@@ -1718,13 +1690,13 @@ function startRoomBettingPhase(roomId) {
   room.usedAdminCrashPoint = armedCrashPoint !== null;
   if (armedCrashPoint !== null) {
     console.log(`[Room ${roomId} Round ${room.roundNumber}] Using admin-set crash point ${armedCrashPoint}x`);
-    publishNextCrashOverride();
   }
   room.roundId = `round-${roomId}-${room.roundNumber}-${Date.now()}`;
   room.seedHash = require('crypto').randomBytes(16).toString('hex');
   room.bettingStartedAt = Date.now();
   room.flyingStartedAt = null;
   room.activeBets = generateBotBets();
+  publishNextCrashOverride();
 
   runtimeLog(`[Room ${roomId} Round ${room.roundNumber}] Betting started. Target: ${room.crashPoint}x | Bots: ${room.activeBets.length}`);
 
@@ -1866,7 +1838,10 @@ function authenticateGameSocket(socket, token) {
   socket.username = user.username;
   socket.userRole = user.role;
   socket.join(user.id);
-  if (isAdminUser(user)) socket.join('admins');
+  if (isAdminUser(user)) {
+    socket.join('admins');
+    socket.emit('next_crash_override', nextCrashOverridePayload());
+  }
   return user;
 }
 
@@ -2199,7 +2174,7 @@ app.post('/api/bonus/claim', async (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ARCHPAY & WALLET PAYMENT ROUTES
+// PAYHERO & WALLET PAYMENT ROUTES
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // This is intentionally public: it contains no payment credentials and keeps
@@ -2208,11 +2183,129 @@ app.get('/api/payments/config', (req, res) => {
   return res.json(paymentConfigPayload());
 });
 
-// Initiate STK Push Payment via ArchPay
+// Rate-limit tracking for PayHero STK push requests to avoid gateway bans
+// Map: userId -> { timestamps: number[], cooldownUntil: number }
+const depositRateLimits = new Map();
+const SHORT_INTERVAL_THRESHOLD_MS = 60 * 1000; // 60 seconds interval between clicks
+const MAX_CONSECUTIVE_SHORT_ATTEMPTS = 3;      // 3 attempts
+const DEPOSIT_COOLDOWN_MS = 10 * 60 * 1000;    // 10 minutes lockout
+const MAX_FAILED_DEPOSIT_ATTEMPTS = 3;         // 3 prompts that never completed
+const FAILED_DEPOSIT_WINDOW_MS = 5 * 60 * 1000; // failures must be this close to chain
+
+function getDepositRateRecord(userId) {
+  let record = depositRateLimits.get(userId);
+  if (!record) {
+    record = { timestamps: [], cooldownUntil: 0, failCount: 0 };
+    depositRateLimits.set(userId, record);
+  }
+  if (typeof record.failCount !== 'number') record.failCount = 0;
+  return record;
+}
+
+// A prompt the player never completed — rejected by PayHero, expired, or
+// abandoned and superseded. Three in a row and we stop asking PayHero, which
+// is what gets a merchant throttled in the first place.
+function recordDepositFailure(userId) {
+  if (!userId) return;
+  const record = getDepositRateRecord(userId);
+  const now = Date.now();
+  // Only a run of failures close together counts. A failure long after the
+  // previous one starts a fresh streak, so someone who fails once, walks away
+  // and comes back later is never locked out.
+  if (record.lastFailAt && (now - record.lastFailAt) > FAILED_DEPOSIT_WINDOW_MS) {
+    record.failCount = 0;
+  }
+  record.failCount += 1;
+  record.lastFailAt = now;
+  if (record.failCount >= MAX_FAILED_DEPOSIT_ATTEMPTS) {
+    record.cooldownUntil = now + DEPOSIT_COOLDOWN_MS;
+    record.failCount = 0;
+    record.lastFailAt = 0;
+    record.timestamps = [];
+  }
+}
+
+// Any completed deposit clears the slate.
+function clearDepositFailures(userId) {
+  if (!userId) return;
+  const record = depositRateLimits.get(userId);
+  if (!record) return;
+  record.failCount = 0;
+  record.lastFailAt = 0;
+  record.timestamps = [];
+}
+
+// Check current user deposit cooldown status
+app.get('/api/payments/cooldown', (req, res) => {
+  const user = getAuthUser(req);
+  if (!user) return res.json({ inCooldown: false });
+  const rateLimit = depositRateLimits.get(user.id);
+  const now = Date.now();
+  if (rateLimit && now < rateLimit.cooldownUntil) {
+    const remainingSeconds = Math.ceil((rateLimit.cooldownUntil - now) / 1000);
+    return res.json({
+      inCooldown: true,
+      cooldownUntil: rateLimit.cooldownUntil,
+      retryAfterSeconds: remainingSeconds
+    });
+  }
+  return res.json({ inCooldown: false });
+});
+
+// Initiate STK Push Payment via PayHero
 app.post('/api/payments/stk-push', async (req, res) => {
   try {
     const user = getAuthUser(req);
     if (!user) return res.status(401).json({ message: 'Unauthorized' });
+
+    const now = Date.now();
+    let rateLimit = depositRateLimits.get(user.id);
+    if (!rateLimit) {
+      rateLimit = { timestamps: [], cooldownUntil: 0 };
+      depositRateLimits.set(user.id, rateLimit);
+    }
+
+    // 1. Check if user is currently in a 10-minute cooldown
+    if (now < rateLimit.cooldownUntil) {
+      const remainingSeconds = Math.ceil((rateLimit.cooldownUntil - now) / 1000);
+      const remainingMinutes = Math.ceil(remainingSeconds / 60);
+      return res.status(429).json({
+        message: `Too many deposit prompts went uncompleted. To avoid payment provider restrictions, please try again in ${remainingMinutes} minute${remainingMinutes === 1 ? '' : 's'}.`,
+        code: 'RATE_LIMIT_COOLDOWN',
+        cooldownUntil: rateLimit.cooldownUntil,
+        retryAfterSeconds: remainingSeconds
+      });
+    }
+
+    // 2. Filter recent timestamps within last 15 minutes
+    rateLimit.timestamps = rateLimit.timestamps.filter(t => (now - t) < 15 * 60 * 1000);
+
+    // 3. Count consecutive short-interval prompts
+    let consecutiveShortCount = 0;
+    const history = rateLimit.timestamps;
+    if (history.length > 0) {
+      const lastT = history[history.length - 1];
+      if (now - lastT <= SHORT_INTERVAL_THRESHOLD_MS) {
+        consecutiveShortCount = 1;
+        for (let i = history.length - 1; i >= 1; i--) {
+          if (history[i] - history[i - 1] <= SHORT_INTERVAL_THRESHOLD_MS) {
+            consecutiveShortCount++;
+          } else {
+            break;
+          }
+        }
+      }
+    }
+
+    // Deliberately no cooldown here. Clicking quickly is not itself abuse —
+    // a player topping up three times in a row is paying successfully and must
+    // not be locked out. The cooldown is driven purely by prompts that were
+    // cancelled or failed (see recordDepositFailure), and any completed
+    // deposit clears the streak.
+    if (consecutiveShortCount >= MAX_CONSECUTIVE_SHORT_ATTEMPTS) {
+      runtimeLog(`[PayHero RateLimit] User ${user.username} (${user.id}) is prompting rapidly; watching for failures.`);
+    }
+    rateLimit.timestamps.push(now);
 
     const { amount, phone_number, phone } = req.body || {};
     const rawPhone = phone_number || phone || user.phone;
@@ -2223,73 +2316,70 @@ app.post('/api/payments/stk-push', async (req, res) => {
     }
 
     const minDeposit = getMinDepositAmount();
-    const maxDeposit = getMaxDepositAmount();
     const numericAmount = Number(amount);
     if (!numericAmount || isNaN(numericAmount) || numericAmount < minDeposit) {
       return res.status(400).json({ message: `Minimum deposit amount is KES ${minDeposit}` });
     }
-    if (numericAmount > maxDeposit) {
-      return res.status(400).json({ message: `Maximum deposit amount is KES ${maxDeposit}` });
-    }
 
     const existingPendingDeposit = transactions.find((tx) =>
-      isMpesaDeposit(tx) &&
+      tx.type === 'deposit' &&
       tx.userId === user.id &&
+      tx.paymentMethod === 'payhero_mpesa' &&
       (tx.status === 'initiating' || tx.status === 'pending')
     );
     if (existingPendingDeposit) {
       const ageMs = Date.now() - new Date(existingPendingDeposit.createdAt || 0).getTime();
-      if (ageMs > 10000) {
+      if (ageMs > 15000) {
         // Automatically expire previous uncompleted prompt so the user isn't stuck
         failDepositTransaction(existingPendingDeposit, 'Superseded by new deposit request');
         void saveStore();
         publishPaymentUpdate(existingPendingDeposit);
       } else {
         return res.status(409).json({
-          message: 'An M-Pesa prompt was recently sent to your phone. Please check your phone or wait 10 seconds.',
+          message: 'An M-Pesa prompt was recently sent to your phone. Please check your phone or wait 15 seconds.',
           checkoutRequestId: existingPendingDeposit.checkoutRequestId || existingPendingDeposit.reference,
           status: existingPendingDeposit.status,
         });
       }
     }
 
-    const reference = generateDepositReference();
+    const reference = `AVT-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
     const tx = createTransaction('deposit', user.id, numericAmount, 'initiating', {
       reference,
       externalReference: reference,
       phone: normalizedPhone,
-      paymentMethod: MPESA_DEPOSIT_METHOD,
+      paymentMethod: 'payhero_mpesa',
       channel: 'm-pesa',
     });
     void saveStore();
     publishPaymentUpdate(tx);
 
-    const payResult = await archpay.initiateSTKPush({
+    const payResult = await payhero.initiateSTKPush({
       amount: numericAmount,
       phone: normalizedPhone,
       reference,
     });
 
     if (!payResult.success) {
-      console.warn('⚠️ ArchPay STK Push Rejected:', payResult.message, payResult.data);
+      console.warn('⚠️ PayHero STK Push Rejected:', payResult.message, payResult.data);
       if (payResult.retryable) {
-        // The remote request may have reached ArchPay even though the response
+        // The remote request may have reached PayHero even though the response
         // was interrupted. Keep it pending and let the verified callback decide.
         tx.status = 'pending';
-        tx.failureReason = 'Waiting for ArchPay to confirm the M-Pesa request.';
+        tx.failureReason = 'Waiting for PayHero to confirm the M-Pesa request.';
         tx.updatedAt = new Date().toISOString();
         void saveStore();
         publishPaymentUpdate(tx);
         pollPaymentStatusFallback(tx, tx.reference, tx.reference, tx.reference);
         return res.status(202).json({
-          message: 'We could not confirm the M-Pesa prompt yet. Do not submit another payment; we are waiting for ArchPay’s final result.',
+          message: 'We could not confirm the M-Pesa prompt yet. Do not submit another payment; we are waiting for PayHero’s final result.',
           checkoutRequestId: tx.reference,
           reference,
           status: 'pending',
         });
       }
 
-      failDepositTransaction(tx, payResult.message || 'ArchPay rejected the M-Pesa request.');
+      failDepositTransaction(tx, payResult.message || 'PayHero rejected the M-Pesa request.');
       void saveStore();
       publishPaymentUpdate(tx);
       return res.status(payResult.configurationError ? 503 : 400).json({
@@ -2325,27 +2415,21 @@ app.post('/api/payments/stk-push', async (req, res) => {
   }
 });
 
-// ArchPay Webhook Callback Endpoint
-app.post('/api/payments/archpay/callback', async (req, res) => {
+// PayHero Webhook Callback Endpoint
+app.post('/api/payments/payhero/callback', async (req, res) => {
   try {
     const callbackToken = String(req.query?.token || req.headers['x-callback-token'] || req.headers['authorization'] || '');
-    const hasValidToken = Boolean(ARCHPAY_CALLBACK_TOKEN) && (
-      callbackToken === ARCHPAY_CALLBACK_TOKEN || callbackToken === `Bearer ${ARCHPAY_CALLBACK_TOKEN}`
+    const hasValidToken = Boolean(PAYHERO_CALLBACK_TOKEN) && (
+      callbackToken === PAYHERO_CALLBACK_TOKEN || callbackToken === `Bearer ${PAYHERO_CALLBACK_TOKEN}`
     );
 
-    // ArchPay is configured with the callback token as part of the callback
+    // PayHero is configured with the callback token as part of the callback
     // URL. Do not accept an unauthenticated callback merely because it knows a
     // transaction reference; references are not payment proof.
     if (!hasValidToken) {
       return res.status(401).json({ message: 'Invalid payment callback token' });
     }
 
-    // ArchPay posts a flat body:
-    //   { event, status, checkoutRequestId, mpesaReceiptNumber,
-    //     amount, phone, accountReference, timestamp }
-    // The nested unwrap and the snake_case aliases below are tolerated so a
-    // wrapped or differently-cased delivery still resolves rather than being
-    // silently dropped as an unmatched callback.
     const payload = req.body || {};
     let responseObj = payload.response || payload.data || payload;
     if (Array.isArray(responseObj)) {
@@ -2362,48 +2446,56 @@ app.post('/api/payments/archpay/callback', async (req, res) => {
       ''
     ).toString().toUpperCase();
 
+    const resultCode = responseObj.ResultCode ?? responseObj.result_code ?? payload.ResultCode ?? payload.result_code;
     const receiptNumber =
-      responseObj.mpesaReceiptNumber ||
-      responseObj.mpesa_receipt_number ||
+      responseObj.mpesa_code ||
       responseObj.MpesaReceiptNumber ||
       responseObj.receipt_number ||
-      payload.mpesaReceiptNumber ||
-      payload.mpesa_receipt_number ||
+      responseObj.ReceiptNumber ||
+      responseObj.third_party_reference ||
+      responseObj.provider_reference ||
+      responseObj.transaction_reference ||
+      payload.mpesa_code ||
+      payload.MpesaReceiptNumber ||
       payload.receipt_number ||
+      payload.third_party_reference ||
+      payload.provider_reference ||
       null;
 
-    // ArchPay echoes our own accountReference back untouched, so it is the
-    // primary match; `reference` remains accepted for hand-made replays.
     const reference =
-      responseObj.accountReference ||
-      responseObj.account_reference ||
-      responseObj.AccountReference ||
+      responseObj.external_reference ||
+      responseObj.ExternalReference ||
+      responseObj.externalReference ||
       responseObj.reference ||
-      payload.accountReference ||
-      payload.account_reference ||
-      payload.AccountReference ||
-      payload.reference;
+      responseObj.Reference ||
+      payload.external_reference ||
+      payload.ExternalReference ||
+      payload.externalReference ||
+      payload.reference ||
+      payload.Reference;
 
     const checkoutRequestId =
-      responseObj.checkoutRequestId ||
       responseObj.CheckoutRequestID ||
       responseObj.checkout_request_id ||
-      payload.checkoutRequestId ||
+      responseObj.transaction_id ||
       payload.CheckoutRequestID ||
-      payload.checkout_request_id;
+      payload.checkout_request_id ||
+      payload.transaction_id;
 
-    // Only ArchPay's terminal 'completed' status may credit the wallet. A
-    // present M-Pesa receipt is accepted as corroboration because ArchPay
-    // issues one solely for money that actually moved.
+    // A final PayHero success is the only event that may credit the wallet.
     const isSuccess =
-      ['COMPLETED', 'COMPLETE', 'SUCCESS', 'SUCCESSFUL'].includes(rawStatus) ||
+      ['SUCCESS', 'SUCCESSFUL', 'COMPLETED', 'COMPLETE', '0', 'TRUE'].includes(rawStatus) ||
+      responseObj.success === true ||
+      resultCode === 0 ||
+      resultCode === '0' ||
       Boolean(receiptNumber);
 
     // Do not fall back to another user's latest payment. A callback must match
     // the reference or checkout ID created before the STK request was sent.
     const tx = transactions.find(
       (t) =>
-        isMpesaDeposit(t) &&
+        t.type === 'deposit' &&
+        t.paymentMethod === 'payhero_mpesa' &&
         (
           (reference && (t.reference === reference || t.id === reference)) ||
           (checkoutRequestId && (t.checkoutRequestId === checkoutRequestId || t.reference === checkoutRequestId))
@@ -2411,11 +2503,11 @@ app.post('/api/payments/archpay/callback', async (req, res) => {
     );
 
     if (!tx) {
-      console.warn('ArchPay callback did not match a deposit:', reference || checkoutRequestId || 'no reference');
+      console.warn('PayHero callback did not match a deposit:', reference || checkoutRequestId || 'no reference');
       return res.status(200).json({ status: 'ignored', message: 'Transaction not found' });
     }
 
-    // A deposit already marked completed, or already told by ArchPay itself
+    // A deposit already marked completed, or already told by PayHero itself
     // to be a real failure, is genuinely final. But a deposit we merely gave
     // up waiting on ('expired') never got a definitive answer, so a late
     // callback must still be allowed through — otherwise a payment that
@@ -2435,7 +2527,7 @@ app.post('/api/payments/archpay/callback', async (req, res) => {
       const amountWasReported = paidAmountValue !== null && paidAmountValue !== undefined && paidAmountValue !== '';
       const amountMatches = !amountWasReported || (Number.isFinite(paidAmount) && Math.abs(paidAmount - expectedAmount) < 0.005);
       if (!amountMatches) {
-        await settleDepositFailure(tx, 'ArchPay reported a payment amount different from the requested deposit.', 'provider_failed');
+        await settleDepositFailure(tx, 'PayHero reported a payment amount different from the requested deposit.', 'provider_failed');
         return res.status(200).json({ status: 'amount_mismatch' });
       }
 
@@ -2448,15 +2540,13 @@ app.post('/api/payments/archpay/callback', async (req, res) => {
       io.to(tx.userId).emit('deposit:success', { amount: expectedAmount, balance: wallet.balance, receipt: receiptNumber, reference: tx.reference });
       publishPaymentUpdate(tx);
 
-      console.log(`ArchPay deposit completed for ${tx.userId}; reference ${tx.reference}${wasRecovered ? ' (recovered from a late callback after our own timeout)' : ''}`);
+      console.log(`PayHero deposit completed for ${tx.userId}; reference ${tx.reference}${wasRecovered ? ' (recovered from a late callback after our own timeout)' : ''}`);
       return res.status(200).json({ status: 'success' });
     }
 
-    // ArchPay's documented terminal failure statuses. Anything else (notably
-    // 'pending') means the customer has not answered the prompt yet, so the
-    // deposit stays open and the pollers keep watching it.
     const isExplicitFailure =
-      ['FAILED', 'CANCELLED', 'CANCELED', 'REJECTED', 'TIMEOUT', 'EXPIRED'].includes(rawStatus);
+      ['FAILED', 'CANCELLED', 'CANCELED', 'REJECTED', 'TIMEOUT', 'EXPIRED'].includes(rawStatus) ||
+      (resultCode !== undefined && resultCode !== null && resultCode !== 0 && resultCode !== '0');
 
     if (!isExplicitFailure) {
       tx.providerStatus = rawStatus || 'PENDING';
@@ -2466,12 +2556,12 @@ app.post('/api/payments/archpay/callback', async (req, res) => {
       return res.status(200).json({ status: 'pending' });
     }
 
-    await settleDepositFailure(tx, responseObj.resultDesc || responseObj.message || payload.message || `Payment ${rawStatus.toLowerCase() || 'was cancelled or failed'}`, 'provider_failed');
+    await settleDepositFailure(tx, responseObj.ResultDesc || responseObj.message || responseObj.response_description || 'Payment was cancelled or failed', 'provider_failed');
 
-    console.warn(`ArchPay deposit failed for ${tx.userId}; reference ${tx.reference}`);
+    console.warn(`PayHero deposit failed for ${tx.userId}; reference ${tx.reference}`);
     return res.status(200).json({ status: 'failed' });
   } catch (err) {
-    console.error('ArchPay Callback Error:', err);
+    console.error('PayHero Callback Error:', err);
     return res.status(500).json({ message: 'Callback processing error' });
   }
 });
@@ -2490,13 +2580,13 @@ app.get('/api/payments/stk-status/:checkoutRequestId', async (req, res) => {
     return res.status(404).json({ message: 'Transaction not found' });
   }
 
-  // Active fast transition: check ArchPay live so status updates within 1-2 seconds.
+  // Active fast transition: check PayHero live so status updates within 1-2 seconds.
   // Also re-check an 'expired' deposit (our own timeout gave up without a
-  // definitive ArchPay answer) so a player re-opening the wallet still gets
+  // definitive PayHero answer) so a player re-opening the wallet still gets
   // credited if the payment actually went through moments later.
   if (tx.status === 'pending' || tx.status === 'initiating' || isResurrectableExpiredDeposit(tx)) {
     try {
-      const result = await archpay.checkSTKPushStatus({
+      const result = await payhero.checkSTKPushStatus({
         reference: tx.providerReference || tx.reference,
         checkoutRequestId: tx.checkoutRequestId,
         externalReference: tx.reference,
@@ -2832,7 +2922,7 @@ app.get('/api/admin/transactions', requireAdmin, (req, res) => {
         externalReference: t.externalReference || t.reference || '-',
         // The real Safaricom M-Pesa receipt is only known once the deposit
         // actually completes (see creditCompletedDeposit). `providerReference`
-        // is ArchPay's own STK-push tracking reference, set the instant the
+        // is PayHero's own STK-push tracking reference, set the instant the
         // prompt is sent — showing it here as a fallback used to mask the
         // real receipt for every completed deposit, since it's set well
         // before mpesaReceiptNumber ever is.
@@ -2951,25 +3041,25 @@ app.post('/api/admin/transactions/:id/reject', requireAdmin, async (req, res) =>
   res.json({ message: 'Transaction rejected', transaction: tx });
 });
 
-// Manually ask ArchPay right now for a deposit's live status, instead of
+// Manually ask PayHero right now for a deposit's live status, instead of
 // waiting on the background pollers. Unlike /approve (which force-credits a
 // transaction on the admin's say-so with no provider verification), this
-// only ever changes the transaction based on what ArchPay itself reports —
+// only ever changes the transaction based on what PayHero itself reports —
 // safe to use whenever a payment looks stuck and you don't want to wait out
 // the automatic retry window.
 app.post('/api/admin/transactions/:id/recheck', requireAdmin, async (req, res) => {
-  const tx = transactions.find((t) => t.id === req.params.id && isMpesaDeposit(t));
-  if (!tx) return res.status(404).json({ message: 'ArchPay deposit not found' });
+  const tx = transactions.find((t) => t.id === req.params.id && t.type === 'deposit' && t.paymentMethod === 'payhero_mpesa');
+  if (!tx) return res.status(404).json({ message: 'PayHero deposit not found' });
 
   if (tx.status === 'completed') {
     return res.json({ message: 'This deposit is already completed.', transaction: tx });
   }
   if (tx.status === 'failed' && tx.failureKind !== 'expired') {
-    return res.status(400).json({ message: 'ArchPay already gave a final failure for this deposit; there is nothing new to check.', transaction: tx });
+    return res.status(400).json({ message: 'PayHero already gave a final failure for this deposit; there is nothing new to check.', transaction: tx });
   }
 
   try {
-    const result = await archpay.checkSTKPushStatus({
+    const result = await payhero.checkSTKPushStatus({
       reference: tx.providerReference || tx.reference,
       checkoutRequestId: tx.checkoutRequestId,
       externalReference: tx.reference,
@@ -2978,17 +3068,37 @@ app.post('/api/admin/transactions/:id/recheck', requireAdmin, async (req, res) =
     if (result && result.isSuccess) {
       await settleDepositSuccess(tx, result);
       console.log(`✅ Deposit recovered via manual admin recheck for ${tx.userId}; reference ${tx.reference}`);
-      return res.json({ message: 'ArchPay confirmed this payment succeeded. The wallet has been credited.', transaction: tx });
+      return res.json({ message: 'PayHero confirmed this payment succeeded. The wallet has been credited.', transaction: tx });
     }
     if (result && result.isFailed) {
       await settleDepositFailure(tx, result.reason || 'Payment failed or was cancelled.', 'provider_failed');
-      return res.json({ message: 'ArchPay confirmed this payment failed.', transaction: tx });
+      return res.json({ message: 'PayHero confirmed this payment failed.', transaction: tx });
     }
-    return res.json({ message: 'ArchPay still has no final result for this payment yet (still queued on their side).', transaction: tx });
+    return res.json({ message: 'PayHero still has no final result for this payment yet (still queued on their side).', transaction: tx });
   } catch (err) {
     console.error('Manual admin recheck error:', err.message);
-    return res.status(502).json({ message: 'Could not reach ArchPay to recheck this payment. Try again shortly.' });
+    return res.status(502).json({ message: 'Could not reach PayHero to recheck this payment. Try again shortly.' });
   }
+});
+
+// Share a short cache and in-flight request across admin tabs to limit provider traffic.
+const fetchPayHeroBalance = require('./payhero-balance').createPayHeroBalanceFetcher();
+let payHeroBalanceCache = null;
+let payHeroBalanceCacheTime = 0;
+let payHeroBalanceRequest = null;
+app.get('/api/admin/payhero/balance', requireAdmin, async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  if (req.query.force !== 'true' && payHeroBalanceCache && Date.now() - payHeroBalanceCacheTime < 15000) {
+    return res.json(payHeroBalanceCache);
+  }
+  if (!payHeroBalanceRequest) {
+    payHeroBalanceRequest = fetchPayHeroBalance().then(result => {
+      payHeroBalanceCache = result.error ? null : result;
+      payHeroBalanceCacheTime = Date.now();
+      return result;
+    }).finally(() => { payHeroBalanceRequest = null; });
+  }
+  return res.json(await payHeroBalanceRequest);
 });
 
 app.get('/api/admin/stats', requireAdmin, (req, res) => {
@@ -3784,19 +3894,23 @@ app.post('/api/predator/redeem', requireAuth, async (req, res) => {
 
 app.get('/api/predator', requireAuth, (req, res) => {
   const access = getPredatorAccess(getAuthUser(req));
-  const history = (gameState.history || []).slice(0, 60);
-  const currentPhase = gameState.phase || 'idle';
+  const requestedRoom = req.query?.roomId !== undefined ? normalizeRoomId(req.query.roomId) : 1;
+  const targetRoomId = requestedRoom || 1;
+  const targetRoom = rooms[targetRoomId] || gameState;
+  const history = (targetRoom.history || []).slice(0, 60);
+  const currentPhase = targetRoom.phase || 'idle';
 
   // Locked visitors get the subscribe screen's backdrop — the live phase and
   // the crash history, both of which they can already watch on the game — and
   // nothing that reveals where the current round will end.
   if (!access.unlocked) {
     return res.json({
+      roomId: targetRoomId,
       access,
       locked: true,
       currentState: {
         phase: currentPhase,
-        currentMultiplier: Number.isFinite(Number(gameState.multiplier)) ? Number(gameState.multiplier) : 1,
+        currentMultiplier: Number.isFinite(Number(targetRoom.multiplier)) ? Number(targetRoom.multiplier) : 1,
         crashPoint: null,
         history,
       },
@@ -3809,18 +3923,19 @@ app.get('/api/predator', requireAuth, (req, res) => {
   // moment betting opens until it crashes. Publishing the round after was read
   // as the board being out of step with the game.
   const bettingOpen = currentPhase === 'betting';
-  const lockedCrashPoint = Number.isFinite(Number(gameState.crashPoint))
-    ? Number(gameState.crashPoint)
+  const lockedCrashPoint = Number.isFinite(Number(targetRoom.crashPoint))
+    ? Number(targetRoom.crashPoint)
     : null;
-  const signalRound = gameState.roundNumber;
+  const signalRound = targetRoom.roundNumber;
 
   res.json({
+    roomId: targetRoomId,
     access,
     locked: false,
     decision: {
       roundNumber: signalRound,
       lockedCrashPoint,
-      lockedAt: gameState.bettingStartedAt ? new Date(gameState.bettingStartedAt).toISOString() : null,
+      lockedAt: targetRoom.bettingStartedAt ? new Date(targetRoom.bettingStartedAt).toISOString() : null,
       status: lockedCrashPoint !== null ? 'locked' : 'pending',
       phase: currentPhase,
       note: bettingOpen
@@ -3839,7 +3954,7 @@ app.get('/api/predator', requireAuth, (req, res) => {
     },
     currentState: {
       phase: currentPhase,
-      currentMultiplier: Number.isFinite(Number(gameState.multiplier)) ? Number(gameState.multiplier) : 1,
+      currentMultiplier: Number.isFinite(Number(targetRoom.multiplier)) ? Number(targetRoom.multiplier) : 1,
       crashPoint: lockedCrashPoint,
       history,
     },
@@ -3852,14 +3967,22 @@ app.get('/api/admin/next-crash', requireAdmin, (req, res) => {
   res.json(nextCrashOverridePayload());
 });
 
-// Arm a crash point for the next round of a room. It applies to the next
-// round that opens, not the round already in progress, because a round's
-// crash point is decided the moment its betting phase starts.
+// Arm a crash point for the next round of a room (1, 2, or 3). It applies to
+// the next round that opens, not the round already in progress, because a
+// round's crash point is decided the moment its betting phase starts.
 app.post('/api/admin/next-crash', requireAdmin, (req, res) => {
-  const { roomId, crashPoint } = req.body || {};
-  const targetRoom = normalizeRoomId(roomId === undefined ? 1 : roomId);
-  if (targetRoom === null) {
-    return res.status(400).json({ message: 'Choose a valid room.' });
+  const { roomId, roomIds, crashPoint } = req.body || {};
+  const requestedRooms = Array.isArray(roomIds) && roomIds.length
+    ? roomIds
+    : [roomId === undefined ? 1 : roomId];
+
+  const targetRooms = [];
+  for (const candidate of requestedRooms) {
+    const normalized = normalizeRoomId(candidate);
+    if (normalized === null) {
+      return res.status(400).json({ message: 'Choose a valid room (Room 1, Room 2, or Room 3).' });
+    }
+    if (!targetRooms.includes(normalized)) targetRooms.push(normalized);
   }
 
   const value = Number(crashPoint);
@@ -3867,12 +3990,17 @@ app.post('/api/admin/next-crash', requireAdmin, (req, res) => {
     return res.status(400).json({ message: `Crash point must be a number between ${MIN_CRASH_OVERRIDE.toFixed(2)} and ${MAX_CRASH_OVERRIDE}.` });
   }
 
-  const rounded = Math.floor(value * 100) / 100;
-  setNextCrashOverride(targetRoom, rounded);
+  const rounded = Math.round(value * 100) / 100;
+  for (const targetRoom of targetRooms) {
+    setNextCrashOverride(targetRoom, rounded);
+    console.log(`Admin armed next crash point ${rounded}x for room ${targetRoom}`);
+  }
   publishNextCrashOverride();
-  console.log(`Admin armed next crash point ${rounded}x for room ${targetRoom}`);
+  const roomLabel = targetRooms.length === 1
+    ? `room ${targetRooms[0]}`
+    : `rooms ${targetRooms.join(', ')}`;
   return res.json({
-    message: `Next round in room ${targetRoom} will crash at ${rounded.toFixed(2)}x.`,
+    message: `Next round in ${roomLabel} will crash at ${rounded.toFixed(2)}x.`,
     ...nextCrashOverridePayload(),
   });
 });
@@ -4023,17 +4151,24 @@ app.get('/api/admin/users/:id/profile', requireAdmin, (req, res) => {
 
 app.get('/api/admin/round-history', requireAdmin, (req, res) => {
   try {
-    const history = (gameState.history || []).map((crashPoint, index) => ({
-      round: gameState.roundNumber - index,
+    const requestedRoom = req.query?.roomId !== undefined ? normalizeRoomId(req.query.roomId) : 1;
+    const targetRoomId = requestedRoom || 1;
+    const targetRoom = rooms[targetRoomId] || gameState;
+    const history = (targetRoom.history || []).map((crashPoint, index) => ({
+      round: targetRoom.roundNumber - index,
       crashPoint: Number(crashPoint),
     }));
+    const avgCrash = targetRoom.history?.length
+      ? targetRoom.history.reduce((sum, val) => sum + Number(val || 0), 0) / targetRoom.history.length
+      : gameStats.averageCrashPoint;
     res.json({
+      roomId: targetRoomId,
       history,
       totalRounds: gameStats.totalRounds,
-      averageCrashPoint: gameStats.averageCrashPoint,
-      currentPhase: gameState.phase,
-      currentMultiplier: gameState.multiplier,
-      currentRound: gameState.roundNumber,
+      averageCrashPoint: avgCrash,
+      currentPhase: targetRoom.phase,
+      currentMultiplier: targetRoom.multiplier,
+      currentRound: targetRoom.roundNumber,
     });
   } catch (e) {
     res.status(500).json({ message: 'Failed to fetch round history' });
@@ -4090,14 +4225,10 @@ function startServer() {
     const adapter = getPersistenceAdapter();
     console.log(adapter === mongodb ? '📦 Persistence: MongoDB' : '📦 Persistence: local JSON');
 
-    // ArchPay reads its webhook URL from the dashboard rather than from each
-    // STK push, so a mismatch here is invisible until deposits stop being
-    // credited. Print the exact URL to register, and say plainly when live
-    // deposits are switched off for want of credentials.
-    if (archpay.isConfigured()) {
-      console.log(`💳 Payments: ArchPay — register this webhook URL in ArchPay → Settings: ${archpay.getCallbackUrl()}`);
+    if (payhero.isConfigured()) {
+      console.log(`💳 Payments: PayHero configured — callback URL: ${payhero.getCallbackUrl()}`);
     } else {
-      console.warn(`⚠️  Payments: ArchPay is not configured — deposits are disabled. ${archpay.getConfigurationError()}`);
+      console.warn(`⚠️  Payments: PayHero is not configured — deposits are disabled. ${payhero.getConfigurationError()}`);
     }
   });
 }
@@ -4140,9 +4271,9 @@ async function bootstrapApplication() {
   // A deployment restart must not strand an in-flight STK request. Resume a
   // fresh status check immediately, while the expiry sweep closes any request
   // that is already outside the provider's prompt window.
-  await expirePendingArchPayDeposits();
+  await expirePendingPayHeroDeposits();
   transactions
-    .filter((tx) => isMpesaDeposit(tx) && (tx.status === 'initiating' || tx.status === 'pending'))
+    .filter((tx) => tx.type === 'deposit' && tx.paymentMethod === 'payhero_mpesa' && (tx.status === 'initiating' || tx.status === 'pending'))
     .forEach((tx) => pollPaymentStatusFallback(
       tx,
       tx.providerReference || tx.reference,

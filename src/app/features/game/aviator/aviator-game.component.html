@@ -763,7 +763,7 @@
           <div *ngIf="msg.isRestrictionNotice; else chatMessage" class="chat-system-warning">{{ msg.text }}</div>
           <ng-template #chatMessage>
             <div class="chat-user-avatar">
-              <img [src]="msg.avatar || 'assets/avatars/avatar-pilot.svg'" class="avatar-photo-img" alt="" />
+              <img [src]="msg.avatar || 'assets/avatars/avatar-pilot.svg'" class="avatar-photo-img" loading="lazy" decoding="async" alt="" />
             </div>
             <div class="chat-bubble">
               <div class="bubble-header">
@@ -923,8 +923,8 @@
         <!-- BOTTOM ACTION BUTTONS: BACK & DEPOSIT -->
         <div class="form-actions-row">
           <button type="button" class="action-btn-back" (click)="showWalletModal.set(false)">BACK</button>
-          <button type="button" class="action-btn-green" [disabled]="mpesaStatus() === 'sending'" (click)="submitDeposit()">
-            {{ mpesaStatus() === 'sending' ? 'Sending...' : 'Deposit' }}
+          <button type="button" class="action-btn-green" [disabled]="mpesaStatus() === 'sending' || depositCooldownSeconds() > 0" (click)="submitDeposit()">
+            {{ depositCooldownSeconds() > 0 ? ('Try in ' + formatCooldown(depositCooldownSeconds())) : (mpesaStatus() === 'sending' ? 'Sending...' : 'Deposit') }}
           </button>
         </div>
       </div>

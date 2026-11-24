@@ -19,7 +19,6 @@ import { Subscription, finalize } from 'rxjs';
 import { ChatMessage, GameSocketService, LiveBetBroadcast, SourceGameBet } from '../../../core/services/game-socket.service';
 import { AuthService, User, TransactionRecord } from '../../../core/services/auth.service';
 import { GameSoundService } from '../../../core/services/game-sound.service';
-import { MAX_DEPOSIT_AMOUNT } from '../../../core/config/deposit-limits';
 import { MAX_PLAY_BALANCE, PLAY_LIMIT_MESSAGE } from '../../../core/config/play-limits';
 
 export type GameState = 'WAITING' | 'RUNNING' | 'CRASHED';
@@ -416,7 +415,8 @@ export class AviatorGameComponent implements OnInit, AfterViewInit, OnDestroy {
   public walletTab = signal<'deposit' | 'withdraw' | 'transactions'>('deposit');
   public depositVal = signal<number | null>(null);
   public minDepositAmount = signal<number>(999);
-  public maxDepositAmount = signal<number>(MAX_DEPOSIT_AMOUNT);
+  public depositCooldownSeconds = signal<number>(0);
+  private depositCooldownTimer: any = null;
   public depositSelectedPreset = signal<number | null>(null);
   public depositPresetTapCount = signal<number>(0);
   public withdrawVal = signal<number>(500);
@@ -698,6 +698,8 @@ export class AviatorGameComponent implements OnInit, AfterViewInit, OnDestroy {
     if (this.fakeJoinIntervalId) clearInterval(this.fakeJoinIntervalId);
     if (this.chatSimulationIntervalId) clearTimeout(this.chatSimulationIntervalId);
     if (this.chatOnlineIntervalId) clearInterval(this.chatOnlineIntervalId);
+    if (this.mpesaPollingInterval) clearInterval(this.mpesaPollingInterval);
+    this.clearDepositCooldownTimer();
     this.cashoutNotificationTimeouts.forEach(timeout => clearTimeout(timeout));
     if (this.resizeObserver) this.resizeObserver.disconnect();
     this.gameSound.stopBackground();
@@ -735,15 +737,18 @@ export class AviatorGameComponent implements OnInit, AfterViewInit, OnDestroy {
   // WEBSOCKET & BACKEND COMMUNICATION
   // --------------------------------------------------------------------------
   private initAuthAndSockets() {
+    this.authService.getDepositCooldown().subscribe(res => {
+      if (res.inCooldown && res.retryAfterSeconds > 0) {
+        this.startDepositCooldown(res.retryAfterSeconds);
+      }
+    });
     this.authService.getPaymentConfig().subscribe(config => {
       this.minDepositAmount.set(config.minDepositAmount);
-      this.maxDepositAmount.set(config.maxDepositAmount);
     });
     this.subs.push(
       this.gameSocket.paymentConfig$.subscribe(config => {
         if (config) {
           this.minDepositAmount.set(config.minDepositAmount);
-          this.maxDepositAmount.set(config.maxDepositAmount);
         }
       }),
       this.authService.currentUser$.subscribe(u => {
@@ -2799,7 +2804,45 @@ export class AviatorGameComponent implements OnInit, AfterViewInit, OnDestroy {
 
   private mpesaPollingInterval: any = null;
 
+  public formatCooldown(totalSeconds: number): string {
+    const mins = Math.floor(totalSeconds / 60);
+    const secs = totalSeconds % 60;
+    return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+  }
+
+  public startDepositCooldown(seconds: number): void {
+    this.clearDepositCooldownTimer();
+    this.depositCooldownSeconds.set(Math.max(1, Math.ceil(seconds)));
+    this.depositCooldownTimer = setInterval(() => {
+      if (this.depositCooldownSeconds() > 1) {
+        this.depositCooldownSeconds.update(s => s - 1);
+      } else {
+        this.depositCooldownSeconds.set(0);
+        this.clearDepositCooldownTimer();
+        if (this.mpesaStatus() === 'failed' && this.mpesaStatusMsg().includes('rapid')) {
+          this.mpesaStatus.set('idle');
+          this.mpesaStatusMsg.set('');
+        }
+      }
+    }, 1000);
+  }
+
+  public clearDepositCooldownTimer(): void {
+    if (this.depositCooldownTimer) {
+      clearInterval(this.depositCooldownTimer);
+      this.depositCooldownTimer = null;
+    }
+  }
+
   public submitDeposit() {
+    if (this.depositCooldownSeconds() > 0) {
+      const waitMsg = `Too many rapid deposit prompts. Please wait ${this.formatCooldown(this.depositCooldownSeconds())} before trying again.`;
+      this.showToast(waitMsg, true);
+      this.mpesaStatus.set('failed');
+      this.mpesaStatusMsg.set(waitMsg);
+      return;
+    }
+
     const rawVal = this.depositVal();
     const amount = (rawVal !== null && rawVal !== undefined && !isNaN(Number(rawVal)) && Number(rawVal) > 0)
       ? Number(rawVal)
@@ -2807,10 +2850,6 @@ export class AviatorGameComponent implements OnInit, AfterViewInit, OnDestroy {
 
     if (isNaN(amount) || amount < this.minDepositAmount()) {
       this.showToast(`Minimum deposit is KES ${this.minDepositAmount().toLocaleString()}`, true);
-      return;
-    }
-    if (amount > this.maxDepositAmount()) {
-      this.showToast(`Maximum deposit is KES ${this.maxDepositAmount().toLocaleString()}`, true);
       return;
     }
 
@@ -2834,14 +2873,19 @@ export class AviatorGameComponent implements OnInit, AfterViewInit, OnDestroy {
     ).subscribe({
       next: (res) => {
         this.mpesaCheckoutRequestId = res.checkoutRequestId;
-        this.mpesaStatus.set('idle');
+        this.mpesaStatus.set('waiting');
         this.mpesaStatusMsg.set(`📱 Check phone (${phone})! Enter your M-Pesa PIN to confirm KES ${amount}.`);
         this.loadTransactionsHistory();
         this.startMpesaStatusPolling();
       },
-      error: (msg: string) => {
+      error: (err: any) => {
         this.mpesaStatus.set('failed');
+        const msg = typeof err === 'string' ? err : (err?.message || 'STK Push failed.');
         this.mpesaStatusMsg.set(this.friendlyPaymentError(msg));
+        if (err?.code === 'RATE_LIMIT_COOLDOWN' || err?.retryAfterSeconds || err?.status === 429) {
+          const cooldownSec = Number(err?.retryAfterSeconds) || 600;
+          this.startDepositCooldown(cooldownSec);
+        }
       }
     });
   }
@@ -2855,13 +2899,12 @@ export class AviatorGameComponent implements OnInit, AfterViewInit, OnDestroy {
     let pollCount = 0;
     this.mpesaPollingInterval = setInterval(() => {
       pollCount++;
-      if (this.mpesaStatus() !== 'waiting' || pollCount > 30) {
+      if (this.mpesaStatus() !== 'waiting' || pollCount > 100) {
         clearInterval(this.mpesaPollingInterval);
         this.mpesaPollingInterval = null;
-        if (pollCount > 30 && this.mpesaStatus() === 'waiting') {
+        if (pollCount > 100 && this.mpesaStatus() === 'waiting') {
           this.mpesaStatus.set('failed');
-          this.mpesaStatusMsg.set('❌ M-Pesa payment prompt timed out.');
-          this.showToast('M-Pesa payment prompt timed out.', true);
+          this.mpesaStatusMsg.set('We are still waiting for PayHero’s final result. Your balance will update automatically once it is confirmed.');
         }
         return;
       }
@@ -2983,7 +3026,7 @@ export class AviatorGameComponent implements OnInit, AfterViewInit, OnDestroy {
 
   private friendlyPaymentError(message: string): string {
     const detail = String(message || '').trim();
-    if (/endpoint not found|stk push failed|archpay/i.test(detail)) {
+    if (/endpoint not found|stk push failed|payhero/i.test(detail)) {
       return 'M-Pesa is temporarily unavailable. No payment request was sent. Please try again shortly.';
     }
     if (/unauthorized|log in/i.test(detail)) {

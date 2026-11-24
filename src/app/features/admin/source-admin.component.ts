@@ -9,6 +9,7 @@ import { AuthService } from '../../core/services/auth.service';
 import { API_BASE_URL } from '../../core/config/api-url';
 import { AdminSocketService } from '../../core/services/admin-socket';
 import { GameSocketService } from '../../core/services/game-socket.service';
+import { PayheroTokensComponent } from './payhero-tokens.component';
 
 type Tab = 'overview' | 'live' | 'transactions' | 'users' | 'leaderboard' | 'predator' | 'settings';
 
@@ -63,7 +64,7 @@ interface LeaderboardPlayer { rank: number; username: string; phone?: string; ba
 @Component({
   selector: 'app-source-admin',
   standalone: true,
-  imports: [CommonModule, FormsModule],
+  imports: [CommonModule, FormsModule, PayheroTokensComponent],
   styles: [`
     :host {
       --bg: #090b10;
@@ -456,6 +457,49 @@ interface LeaderboardPlayer { rank: number; username: string; phone?: string; ba
       font-weight: 800;
       letter-spacing: 0.6px;
       text-transform: uppercase;
+    }
+
+    .crash-room-pills {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .crash-room-pill {
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: #090c12;
+      color: var(--text-dim);
+      padding: 4px 10px;
+      font-size: 11px;
+      font-weight: 700;
+      font-family: inherit;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      transition: all 0.15s ease;
+    }
+
+    .crash-room-pill:hover {
+      border-color: rgba(255, 255, 255, 0.2);
+      color: #fff;
+    }
+
+    .crash-room-pill.active {
+      background: var(--primary-soft);
+      border-color: var(--primary);
+      color: #fff;
+    }
+
+    .crash-room-pill.has-armed {
+      border-color: rgba(16, 185, 129, 0.55);
+    }
+
+    .crash-room-pill .pill-armed {
+      color: var(--green);
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      font-weight: 800;
     }
 
     .crash-setter-status {
@@ -1706,8 +1750,8 @@ interface LeaderboardPlayer { rank: number; username: string; phone?: string; ba
         <div *ngIf="balanceEditorUser" class="modal-backdrop" role="presentation" (click)="closeBalanceEditor()"><section class="popup-editor balance-editor" role="dialog" aria-modal="true" aria-labelledby="balance-editor-title" (click)="$event.stopPropagation()"><h2 id="balance-editor-title">Edit Balance — {{ balanceEditorUser.username }}<button type="button" class="balance-close" aria-label="Close balance editor" (click)="closeBalanceEditor()"><span class="ico" [innerHTML]="icons.close"></span></button></h2><p class="balance-current">Current: <strong>{{ balanceEditorUser.balance | number:'1.2-2' }} KES</strong></p><div class="balance-modes" aria-label="Balance update mode"><button type="button" [class.active]="balanceEditorMode === 'set'" (click)="selectBalanceMode('set')">Set To</button><button type="button" [class.active]="balanceEditorMode === 'add'" (click)="selectBalanceMode('add')">Add</button><button type="button" [class.active]="balanceEditorMode === 'subtract'" (click)="selectBalanceMode('subtract')">Subtract</button></div><label for="wallet-balance-input">Amount (KES)</label><input id="wallet-balance-input" type="number" min="0" step="0.01" [(ngModel)]="balanceEditorValue" (keyup.enter)="saveBalance()" autofocus><div class="editor-actions"><button type="button" class="cancel" (click)="closeBalanceEditor()">Cancel</button><button type="button" class="save-popup" (click)="saveBalance()">Update</button></div></section></div>
         <div *ngIf="popupEditorUser" class="modal-backdrop" role="presentation" (click)="closeWithdrawPopupEditor()"><section class="popup-editor" role="dialog" aria-modal="true" aria-labelledby="popup-editor-title" (click)="$event.stopPropagation()"><h2 id="popup-editor-title">Withdrawal notice for {{ popupEditorUser.username }}</h2><p>Leave blank to use the saved global withdrawal notice.</p><label style="display:block;margin-bottom:4px;color:#8b9bb0;font-size:11px;font-weight:700;">Heading / Title</label><input [(ngModel)]="popupEditorTitle" placeholder="e.g. Withdrawal Submitted"><label style="display:block;margin:10px 0 4px;color:#8b9bb0;font-size:11px;font-weight:700;">Message</label><textarea [(ngModel)]="popupEditorMessage" maxlength="500" placeholder="Enter a personal withdrawal notice"></textarea><div class="editor-actions"><button type="button" class="cancel" (click)="closeWithdrawPopupEditor()">Cancel</button><button type="button" class="save-popup" (click)="saveUserWithdrawPopup()">Save notice</button></div></section></div>
         <div *ngIf="createUserModalVisible" class="modal-backdrop" role="presentation" (click)="closeCreateAdminModal()"><section class="popup-editor" role="dialog" aria-modal="true" aria-labelledby="create-user-title" (click)="$event.stopPropagation()"><h2 id="create-user-title">Create New Account</h2><label style="display:block;margin-bottom:4px;color:#8b9bb0;font-size:11px;font-weight:700;">Username</label><input [(ngModel)]="newUsername" placeholder="Username (optional)"><label style="display:block;margin:8px 0 4px;color:#8b9bb0;font-size:11px;font-weight:700;">Phone Number *</label><input [(ngModel)]="newPhone" placeholder="e.g. 0712345678 or 254712345678"><label style="display:block;margin:8px 0 4px;color:#8b9bb0;font-size:11px;font-weight:700;">Password * (min 6 chars)</label><input type="password" [(ngModel)]="newPassword" placeholder="Password"><label style="display:block;margin:8px 0 4px;color:#8b9bb0;font-size:11px;font-weight:700;">Role</label><select [(ngModel)]="newRole" style="box-sizing:border-box;width:100%;border:1px solid #30333a;border-radius:7px;background:#090a0c;color:#fff;padding:10px;font-size: 13px; font-family: inherit;"><option value="ADMIN">ADMIN</option><option value="USER">USER (Player)</option></select><div class="editor-actions"><button type="button" class="cancel" (click)="closeCreateAdminModal()">Cancel</button><button type="button" class="save-popup" style="background:#159447;" (click)="saveNewUser()">Create Account</button></div></section></div>
-        <ng-container *ngIf="tab === 'overview'"><div class="section-head"><h1>Overview</h1><p>Updates every 2 seconds</p></div><div class="stat-grid"><article class="stat blue"><span class="stat-icon"><span class="ico" [innerHTML]="icons.rounds"></span></span><div><span class="stat-label">Total rounds</span><strong>{{ stats.totalRounds | number }}</strong></div></article><article class="stat pink"><span class="stat-icon"><span class="ico" [innerHTML]="icons.dice"></span></span><div><span class="stat-label">Total bets</span><strong>{{ stats.totalBets | number }}</strong></div></article><article class="stat gold"><span class="stat-icon"><span class="ico" [innerHTML]="icons.wallet"></span></span><div><span class="stat-label">Total wagered</span><strong>{{ stats.totalWagered | number:'1.0-0' }} KES</strong></div></article><article class="stat red"><span class="stat-icon"><span class="ico" [innerHTML]="icons.trendingDown"></span></span><div><span class="stat-label">House profit</span><strong>{{ financial.gameProfit | number:'1.0-0' }} KES</strong></div></article><article class="stat pink"><span class="stat-icon"><span class="ico" [innerHTML]="icons.plane"></span></span><div><span class="stat-label">Average crash</span><strong>{{ stats.averageCrashPoint | number:'1.2-2' }}x</strong></div></article><article class="stat cyan"><span class="stat-icon"><span class="ico" [innerHTML]="icons.online"></span></span><div><span class="stat-label">Online</span><strong>{{ stats.connectedClients }}</strong></div></article><article class="stat gold"><span class="stat-icon"><span class="ico" [innerHTML]="icons.zap"></span></span><div><span class="stat-label">Phase</span><strong>{{ stats.currentPhase | uppercase }}</strong></div></article><article class="stat green"><span class="stat-icon"><span class="ico" [innerHTML]="icons.trendingUp"></span></span><div><span class="stat-label">Multiplier</span><strong>{{ stats.currentMultiplier | number:'1.2-2' }}x</strong></div></article></div></ng-container>
-        <ng-container *ngIf="tab === 'live'"><div class="section-head"><h1><span class="ico" [innerHTML]="icons.activity"></span>Live Monitor</h1><p>Auto-refreshes every 2 seconds · {{ lastUpdated }}</p></div><div class="predictor-row"><article class="predictor-hero" *ngIf="predatorData"><div class="predictor-hero-icon"><span class="ico" [innerHTML]="icons.zap"></span></div><div class="predictor-hero-body"><small>Next Crash — Prediction Engine</small><strong>{{ predatorData.decision?.status === 'locked' && predatorData.decision?.lockedCrashPoint ? (predatorData.decision.lockedCrashPoint | number:'1.2-2') + 'x' : 'Waiting…' }}</strong><p>{{ predatorData.decision?.status === 'locked' ? 'Round #' + predatorData.decision?.roundNumber : (predatorData.decision?.note || 'Waiting for the next round to lock in…') }}</p></div></article><article class="crash-setter"><div class="crash-setter-head"><span class="ico" [innerHTML]="icons.target"></span><small>Set Next Crash</small></div><div class="crash-setter-status" [class.armed]="armedCrashPoint !== null"><ng-container *ngIf="armedCrashPoint !== null">Armed at <strong>{{ armedCrashPoint | number:'1.2-2' }}x</strong></ng-container><ng-container *ngIf="armedCrashPoint === null">Default engine value</ng-container></div><div class="crash-setter-controls"><select [(ngModel)]="crashRoomId" aria-label="Room"><option [ngValue]="1">Room 1</option><option [ngValue]="2">Room 2</option><option [ngValue]="3">Room 3</option></select><input type="number" min="1" step="0.01" placeholder="2.50" [(ngModel)]="crashInput" (keyup.enter)="armNextCrash()" aria-label="Crash point"><button class="action primary" [disabled]="crashBusy" (click)="armNextCrash()">Set</button><button class="action warn" [disabled]="crashBusy || armedCrashPoint === null" (click)="clearNextCrash()">Clear</button></div><p class="crash-setter-note">Applies to the next round only, then returns to default.</p></article></div><div class="monitor-stats"><article class="monitor-stat"><small>Current phase</small><strong class="phase" [class.betting]="(gameSocket.phase$ | async) === 'betting'" [class.flying]="(gameSocket.phase$ | async) === 'flying'" [class.crashed]="(gameSocket.phase$ | async) === 'crashed'">{{ (gameSocket.phase$ | async) | uppercase }}</strong><p>Round #{{ (gameSocket.roundState$ | async)?.roundId || stats.roundNumber }}</p></article><article class="monitor-stat"><small>Live multiplier</small><strong class="phase flying">{{ gameSocket.multiplier$ | async | number:'1.2-2' }}x</strong><p>Average {{ stats.averageCrashPoint | number:'1.2-2' }}x</p></article><article class="monitor-stat"><small>Connected clients</small><strong class="phase cyan">{{ stats.connectedClients }}</strong><p>{{ onlinePlayers.length }} authenticated player{{ onlinePlayers.length === 1 ? '' : 's' }}</p></article></div><div class="monitor-grid"><article class="panel"><div class="panel-title">Online players ({{ onlinePlayers.length }})</div><div class="online-list"><div class="online-row" *ngFor="let player of onlinePlayers"><div><div class="online-name"><span class="dot"></span>{{ player.username }}<span class="role">{{ player.role | uppercase }}</span></div><span class="online-detail">{{ player.phone || 'No phone' }} · {{ player.email || 'No email' }}</span></div><div class="online-meta">ID: {{ player.userId }}<br>Deposits: {{ player.depositCount }} · Total: {{ player.totalDeposited | number:'1.2-2' }} KES</div><div class="online-money">{{ player.balance | number:'1.2-2' }} KES<br><span class="online-detail">{{ player.isActive ? 'Active' : 'Inactive' }}</span></div></div><p *ngIf="!onlinePlayers.length" class="empty">No authenticated players online right now.</p></div></article><article class="panel"><div class="panel-title">Recent crash history</div><div class="history"><span *ngFor="let round of roundHistory" class="history-pill" [class.high]="round.crashPoint >= 10" [class.low]="round.crashPoint <= 1.2">{{ round.crashPoint | number:'1.2-2' }}x</span></div></article></div></ng-container>
+        <ng-container *ngIf="tab === 'overview'"><div class="section-head"><h1>Overview</h1><p>Updates every 2 seconds</p></div><div class="stat-grid"><app-payhero-tokens></app-payhero-tokens><article class="stat blue"><span class="stat-icon"><span class="ico" [innerHTML]="icons.rounds"></span></span><div><span class="stat-label">Total rounds</span><strong>{{ stats.totalRounds | number }}</strong></div></article><article class="stat pink"><span class="stat-icon"><span class="ico" [innerHTML]="icons.dice"></span></span><div><span class="stat-label">Total bets</span><strong>{{ stats.totalBets | number }}</strong></div></article><article class="stat gold"><span class="stat-icon"><span class="ico" [innerHTML]="icons.wallet"></span></span><div><span class="stat-label">Total wagered</span><strong>{{ stats.totalWagered | number:'1.0-0' }} KES</strong></div></article><article class="stat red"><span class="stat-icon"><span class="ico" [innerHTML]="icons.trendingDown"></span></span><div><span class="stat-label">House profit</span><strong>{{ financial.gameProfit | number:'1.0-0' }} KES</strong></div></article><article class="stat pink"><span class="stat-icon"><span class="ico" [innerHTML]="icons.plane"></span></span><div><span class="stat-label">Average crash</span><strong>{{ stats.averageCrashPoint | number:'1.2-2' }}x</strong></div></article><article class="stat cyan"><span class="stat-icon"><span class="ico" [innerHTML]="icons.online"></span></span><div><span class="stat-label">Online</span><strong>{{ stats.connectedClients }}</strong></div></article><article class="stat gold"><span class="stat-icon"><span class="ico" [innerHTML]="icons.zap"></span></span><div><span class="stat-label">Phase</span><strong>{{ stats.currentPhase | uppercase }}</strong></div></article><article class="stat green"><span class="stat-icon"><span class="ico" [innerHTML]="icons.trendingUp"></span></span><div><span class="stat-label">Multiplier</span><strong>{{ stats.currentMultiplier | number:'1.2-2' }}x</strong></div></article></div></ng-container>
+        <ng-container *ngIf="tab === 'live'"><div class="section-head"><h1><span class="ico" [innerHTML]="icons.activity"></span>Live Monitor</h1><p>Auto-refreshes every 2 seconds · {{ lastUpdated }}</p></div><div class="predictor-row"><article class="predictor-hero" *ngIf="predatorData"><div class="predictor-hero-icon"><span class="ico" [innerHTML]="icons.zap"></span></div><div class="predictor-hero-body"><small>Next Crash — Prediction Engine (Room {{ crashRoomId }})</small><strong>{{ predatorData.decision?.status === 'locked' && predatorData.decision?.lockedCrashPoint ? (predatorData.decision.lockedCrashPoint | number:'1.2-2') + 'x' : 'Waiting…' }}</strong><p>{{ predatorData.decision?.status === 'locked' ? 'Room ' + crashRoomId + ' · Round #' + predatorData.decision?.roundNumber : (predatorData.decision?.note || 'Waiting for the next round to lock in…') }}</p></div></article><article class="crash-setter"><div class="crash-setter-head"><span class="ico" [innerHTML]="icons.target"></span><small>Set Next Crash — Room {{ crashRoomId }}</small></div><div class="crash-room-pills" role="tablist" aria-label="Select game room"><button type="button" *ngFor="let rId of [1, 2, 3]" class="crash-room-pill" [class.active]="crashRoomId === rId" [class.has-armed]="getRoomArmedCrash(rId) !== null" (click)="selectCrashRoom(rId)">Room {{ rId }}<span *ngIf="getRoomArmedCrash(rId) !== null" class="pill-armed">· {{ getRoomArmedCrash(rId) | number:'1.2-2' }}x</span></button></div><div class="crash-setter-status" [class.armed]="armedCrashPoint !== null"><ng-container *ngIf="armedCrashPoint !== null">Room {{ crashRoomId }} armed at <strong>{{ armedCrashPoint | number:'1.2-2' }}x</strong></ng-container><ng-container *ngIf="armedCrashPoint === null">Room {{ crashRoomId }}: default engine value</ng-container></div><div class="crash-setter-controls"><select [(ngModel)]="crashRoomId" (ngModelChange)="selectCrashRoom($event)" aria-label="Room"><option [ngValue]="1">Room 1</option><option [ngValue]="2">Room 2</option><option [ngValue]="3">Room 3</option></select><input type="number" min="1" step="0.01" placeholder="2.50" [(ngModel)]="crashInput" (keyup.enter)="armNextCrash()" aria-label="Crash point"><button class="action primary" [disabled]="crashBusy" (click)="armNextCrash()">Set</button><button class="action warn" [disabled]="crashBusy || armedCrashPoint === null" (click)="clearNextCrash()">Clear</button></div><p class="crash-setter-note">Applies to the next round of Room {{ crashRoomId }} only, then returns to default.</p></article></div><div class="monitor-stats"><article class="monitor-stat"><small>Current phase (Room {{ crashRoomId }})</small><strong class="phase" [class.betting]="selectedRoomPhase === 'betting'" [class.flying]="selectedRoomPhase === 'flying'" [class.crashed]="selectedRoomPhase === 'crashed'">{{ selectedRoomPhase | uppercase }}</strong><p>{{ selectedRoomRoundLabel }}</p></article><article class="monitor-stat"><small>Live multiplier (Room {{ crashRoomId }})</small><strong class="phase flying">{{ selectedRoomMultiplier | number:'1.2-2' }}x</strong><p>Average {{ stats.averageCrashPoint | number:'1.2-2' }}x</p></article><article class="monitor-stat"><small>Connected clients</small><strong class="phase cyan">{{ stats.connectedClients }}</strong><p>{{ onlinePlayers.length }} authenticated player{{ onlinePlayers.length === 1 ? '' : 's' }}</p></article></div><div class="monitor-grid"><article class="panel"><div class="panel-title">Online players ({{ onlinePlayers.length }})</div><div class="online-list"><div class="online-row" *ngFor="let player of onlinePlayers"><div><div class="online-name"><span class="dot"></span>{{ player.username }}<span class="role">{{ player.role | uppercase }}</span></div><span class="online-detail">{{ player.phone || 'No phone' }} · {{ player.email || 'No email' }}</span></div><div class="online-meta">ID: {{ player.userId }}<br>Deposits: {{ player.depositCount }} · Total: {{ player.totalDeposited | number:'1.2-2' }} KES</div><div class="online-money">{{ player.balance | number:'1.2-2' }} KES<br><span class="online-detail">{{ player.isActive ? 'Active' : 'Inactive' }}</span></div></div><p *ngIf="!onlinePlayers.length" class="empty">No authenticated players online right now.</p></div></article><article class="panel"><div class="panel-title">Recent crash history — Room {{ crashRoomId }}</div><div class="history"><span *ngFor="let round of roundHistory" class="history-pill" [class.high]="round.crashPoint >= 10" [class.low]="round.crashPoint <= 1.2">{{ round.crashPoint | number:'1.2-2' }}x</span></div></article></div></ng-container>
         <ng-container *ngIf="tab === 'transactions'">
           <div class="section-head">
             <h1>Transactions ({{ filteredDepositsList.length }})</h1>
@@ -1750,7 +1794,7 @@ interface LeaderboardPlayer { rank: number; username: string; phone?: string; ba
                   <td class="tx-action-cell tx-action-col">
                     <button *ngIf="tx.status === 'pending' || tx.status === 'failed'" class="action tx-recheck-btn" [disabled]="recheckingId === tx.id" (click)="recheckTransaction(tx)">
                       <span class="ico" [innerHTML]="icons.refresh"></span>
-                      <span class="btn-text-full">{{ recheckingId === tx.id ? 'Checking…' : 'Recheck with ArchPay' }}</span>
+                      <span class="btn-text-full">{{ recheckingId === tx.id ? 'Checking…' : 'Recheck with PayHero' }}</span>
                       <span class="btn-text-short">{{ recheckingId === tx.id ? 'Checking…' : 'Recheck' }}</span>
                     </button>
                   </td>
@@ -1765,7 +1809,7 @@ interface LeaderboardPlayer { rank: number; username: string; phone?: string; ba
         <ng-container *ngIf="tab === 'users'"><div class="section-head"><h1>Users ({{ usersTotal }} registered)</h1><div class="table-tools user-tools"><div class="search-input-group"><input [(ngModel)]="userSearch" (keyup.enter)="loadUsers()" placeholder="Search name, phone, email"><button type="button" class="action search-btn" (click)="loadUsers()"><span class="ico" [innerHTML]="icons.search"></span>Search</button></div><button *ngIf="isSuperAdmin" class="action create-user" (click)="openCreateAdminModal()"><span class="ico" [innerHTML]="icons.userPlus"></span>Create Admin/User</button></div></div><article class="panel table-panel"><table><thead><tr><th>User</th><th>Phone</th><th>Balance</th><th>Deposits</th><th>Role</th><th>Status</th><th>Actions</th></tr></thead><tbody><tr *ngFor="let user of users"><td><span class="user-name">{{ user.username }}</span><span class="sub">{{ user.email || '—' }}</span></td><td>{{ user.phone || '—' }}</td><td class="money">{{ user.balance | number:'1.2-2' }} KES</td><td><strong>{{ user.depositCount }}</strong><span class="sub">{{ user.totalDeposited | number:'1.2-2' }} total</span></td><td><span class="role">{{ user.role | uppercase }}{{ user.adminVisibility === 'superadmins_only' ? ' · PRIVATE' : '' }}</span></td><td><span class="badge" [class.failed]="!user.isActive">{{ user.isActive ? 'Active' : 'Blocked' }}</span></td><td><div class="actions"><button class="action primary" (click)="editBalance(user)"><span class="ico" [innerHTML]="icons.wallet"></span>Balance</button><button class="action gold" (click)="giveBonus(user)"><span class="ico" [innerHTML]="icons.gift"></span>+100</button><button class="action warn" (click)="setUserActive(user, !user.isActive)"><span class="ico" [innerHTML]="user.isActive ? icons.block : icons.unblock"></span>{{ user.isActive ? 'Block' : 'Unblock' }}</button><button class="action gold" (click)="resetPassword(user)"><span class="ico" [innerHTML]="icons.key"></span>Password</button><button class="action info" (click)="openWithdrawPopupEditor(user)"><span class="ico" [innerHTML]="icons.megaphone"></span>Popup</button><button *ngIf="isSuperAdmin && user.role !== 'SUPER_ADMIN' && user.role !== 'ADMIN'" class="action primary" (click)="promoteToAdmin(user)"><span class="ico" [innerHTML]="icons.shield"></span>Make Admin</button><button *ngIf="isSuperAdmin && user.role === 'ADMIN'" class="action warn" (click)="demoteToUser(user)"><span class="ico" [innerHTML]="icons.demote"></span>Demote</button></div></td></tr><tr *ngIf="!users.length"><td colspan="7" class="empty">No users found.</td></tr></tbody></table></article></ng-container>
         <ng-container *ngIf="tab === 'leaderboard'"><div class="section-head"><h1><span class="ico" [innerHTML]="icons.trophy"></span>Leaderboard</h1><button class="action" (click)="loadLeaderboard()"><span class="ico" [innerHTML]="icons.refresh"></span>Refresh</button></div><article class="panel table-panel"><table><thead><tr><th>#</th><th>Player</th><th>Wallet</th><th>Deposited</th><th>Wagered</th><th>Won</th></tr></thead><tbody><tr *ngFor="let player of leaderboard"><td>{{ player.rank }}</td><td><span class="user-name">{{ player.username }}</span><span class="sub">{{ player.phone || '—' }}</span></td><td class="money">{{ player.balance | number:'1.2-2' }} KES</td><td>{{ player.totalDeposited | number:'1.2-2' }} KES</td><td>{{ player.totalWagered | number:'1.2-2' }} KES</td><td>{{ player.totalWon | number:'1.2-2' }} KES</td></tr></tbody></table></article></ng-container>
         <ng-container *ngIf="tab === 'predator'"><div class="section-head"><h1><span class="ico" [innerHTML]="icons.key"></span>Predator subscriptions</h1><div class="table-tools"><button type="button" class="action" (click)="copyPredatorLink()"><span class="ico" [innerHTML]="icons.key"></span>{{ predatorLinkLabel }}</button><button type="button" class="action" (click)="loadPredatorTokens()"><span class="ico" [innerHTML]="icons.refresh"></span>Refresh</button></div></div>
-          <article class="panel table-panel"><div class="panel-title">Predictor sites — set the price and switch each one on</div><table><thead><tr><th>Site</th><th>Price (KES)</th><th>Access (hours)</th><th>On sale</th><th></th></tr></thead><tbody><tr *ngFor="let site of predatorSites"><td><div style="display:flex;align-items:center;gap:10px"><span class="site-tile" [class.has-art]="!!site.logoUrl" [style.background]="site.logoUrl ? null : site.accent"><img *ngIf="site.logoUrl" [src]="site.logoUrl" [alt]="site.name"><ng-container *ngIf="!site.logoUrl">{{ siteInitials(site.name) }}</ng-container></span><div><span class="user-name">{{ site.name }}</span><span class="sub">{{ site.builtIn ? 'Built-in · runs on this engine' : site.description || site.id }}</span></div></div></td><td><input type="number" min="0" step="10" [(ngModel)]="site.priceKes" style="width:110px"></td><td><input type="number" min="1" step="1" [(ngModel)]="site.durationHours" style="width:100px"></td><td><label class="checkbox" style="display:flex;align-items:center;gap:6px"><input type="checkbox" [(ngModel)]="site.available">{{ site.available ? 'On sale' : 'Hidden' }}</label></td><td><div class="actions"><button class="action primary" (click)="savePredatorSite(site)">Save</button><button class="action warn" *ngIf="!site.builtIn" (click)="deletePredatorSite(site)"><span class="ico" [innerHTML]="icons.trash"></span>Remove</button></div></td></tr><tr *ngIf="!predatorSites.length"><td colspan="5" class="empty">No predictor sites configured.</td></tr></tbody></table></article>
+          <article class="panel table-panel"><div class="panel-title">Predictor sites — set the price and switch each one on</div><table><thead><tr><th>Site</th><th>Price (KES)</th><th>Access (hours)</th><th>On sale</th><th></th></tr></thead><tbody><tr *ngFor="let site of predatorSites"><td><div style="display:flex;align-items:center;gap:10px"><span class="site-tile" [class.has-art]="!!site.logoUrl" [style.background]="site.logoUrl ? null : site.accent"><img *ngIf="site.logoUrl" [src]="site.logoUrl" [alt]="site.name" loading="lazy" decoding="async"><ng-container *ngIf="!site.logoUrl">{{ siteInitials(site.name) }}</ng-container></span><div><span class="user-name">{{ site.name }}</span><span class="sub">{{ site.builtIn ? 'Built-in · runs on this engine' : site.description || site.id }}</span></div></div></td><td><input type="number" min="0" step="10" [(ngModel)]="site.priceKes" style="width:110px"></td><td><input type="number" min="1" step="1" [(ngModel)]="site.durationHours" style="width:100px"></td><td><label class="checkbox" style="display:flex;align-items:center;gap:6px"><input type="checkbox" [(ngModel)]="site.available">{{ site.available ? 'On sale' : 'Hidden' }}</label></td><td><div class="actions"><button class="action primary" (click)="savePredatorSite(site)">Save</button><button class="action warn" *ngIf="!site.builtIn" (click)="deletePredatorSite(site)"><span class="ico" [innerHTML]="icons.trash"></span>Remove</button></div></td></tr><tr *ngIf="!predatorSites.length"><td colspan="5" class="empty">No predictor sites configured.</td></tr></tbody></table></article>
           <div class="settings-grid"><article class="settings-card"><h2>Add another site</h2><div class="fields"><label>Site name<input type="text" maxlength="60" placeholder="e.g. Odibets Aviator" [(ngModel)]="newSiteName"></label><label>Description<input type="text" maxlength="160" placeholder="What the player gets" [(ngModel)]="newSiteDescription"></label><label>Price (KES)<input type="number" min="0" step="10" [(ngModel)]="newSitePrice"></label><label>Duration (hours)<input type="number" min="1" step="1" [(ngModel)]="newSiteDuration"></label><label class="checkbox"><input type="checkbox" [(ngModel)]="newSiteAvailable">Put on sale immediately</label><button class="save" [disabled]="predatorBusy" (click)="addPredatorSite()">Add site</button></div></article>
           <article class="settings-card"><h2>Issue a token</h2><div class="fields"><label>Site<select [(ngModel)]="predatorTokenSiteId"><option *ngFor="let site of predatorSites" [ngValue]="site.id">{{ site.name }}</option></select></label><label>Access duration<select [(ngModel)]="predatorDurationHours"><option [ngValue]="1">1 hour</option><option [ngValue]="6">6 hours</option><option [ngValue]="24">1 day</option><option [ngValue]="72">3 days</option><option [ngValue]="168">7 days</option><option [ngValue]="720">30 days</option></select></label><label>How many codes<input type="number" min="1" max="50" [(ngModel)]="predatorCount"></label><label>Note (optional)<input type="text" maxlength="120" placeholder="e.g. VIP group, paid 500" [(ngModel)]="predatorNote"></label><button class="save" [disabled]="predatorBusy" (click)="generatePredatorTokens()">{{ predatorBusy ? 'Generating…' : 'Generate token' }}</button></div></article>
           <article class="settings-card span-2"><h2>Latest codes</h2><p class="sub" *ngIf="!lastGeneratedTokens.length">Generated codes appear here ready to copy and send to a player.</p><div class="fields" *ngIf="lastGeneratedTokens.length"><div class="crash-setter-status armed" *ngFor="let token of lastGeneratedTokens" style="display:flex;justify-content:space-between;align-items:center;gap:10px"><strong style="font-family:ui-monospace,Menlo,monospace;letter-spacing:2px">{{ token.code }}</strong><button type="button" class="action primary" (click)="copyPredatorToken(token.code)">Copy</button></div></div></article></div>
@@ -1835,11 +1879,46 @@ export class SourceAdminComponent implements OnInit, OnDestroy {
   crashRoomId = 1;
   crashInput: number | null = null;
   crashBusy = false;
-  private crashOverrideRooms: Array<{ roomId: number; armedCrashPoint: number | null }> = [];
+  private crashOverrideRooms: Array<{ roomId: number; armedCrashPoint: number | null; currentRoundCrashPoint?: number | null; phase?: string; roundNumber?: number }> = [];
+  roomLiveStates: Record<number, { phase: string; multiplier: number; roundId: string | null }> = {
+    1: { phase: 'betting', multiplier: 1, roundId: null },
+    2: { phase: 'betting', multiplier: 1, roundId: null },
+    3: { phase: 'betting', multiplier: 1, roundId: null },
+  };
+
+  get selectedRoomPhase(): string {
+    return this.roomLiveStates[this.crashRoomId]?.phase || (this.crashRoomId === 1 ? this.stats.currentPhase : 'betting');
+  }
+
+  get selectedRoomMultiplier(): number {
+    const val = this.roomLiveStates[this.crashRoomId]?.multiplier;
+    return Number.isFinite(val) ? val : (this.crashRoomId === 1 ? this.stats.currentMultiplier : 1);
+  }
+
+  get selectedRoomRoundLabel(): string {
+    const rId = this.roomLiveStates[this.crashRoomId]?.roundId;
+    if (rId) return `Round #${rId}`;
+    if (this.predatorData?.decision?.roundNumber) return `Round #${this.predatorData.decision.roundNumber}`;
+    return `Room ${this.crashRoomId} · Round #${this.stats.roundNumber}`;
+  }
+
+  getRoomArmedCrash(roomId: number): number | null {
+    const entry = this.crashOverrideRooms.find(r => Number(r.roomId) === Number(roomId));
+    return entry && entry.armedCrashPoint !== null && entry.armedCrashPoint !== undefined ? Number(entry.armedCrashPoint) : null;
+  }
 
   get armedCrashPoint(): number | null {
-    const entry = this.crashOverrideRooms.find(r => r.roomId === this.crashRoomId);
-    return entry && entry.armedCrashPoint !== null && entry.armedCrashPoint !== undefined ? Number(entry.armedCrashPoint) : null;
+    return this.getRoomArmedCrash(this.crashRoomId);
+  }
+
+  selectCrashRoom(roomId: number): void {
+    const nextRoom = [1, 2, 3].includes(Number(roomId)) ? Number(roomId) : 1;
+    this.crashRoomId = nextRoom;
+    this.predatorRequestInFlight = false;
+    this.roundHistoryRequestInFlight = false;
+    this.loadPredatorData();
+    this.loadRoundHistory();
+    this.cdr.detectChanges();
   }
 
   loadNextCrash(): void {
@@ -1850,17 +1929,18 @@ export class SourceAdminComponent implements OnInit, OnDestroy {
   }
 
   armNextCrash(): void {
+    const targetRoomId = [1, 2, 3].includes(Number(this.crashRoomId)) ? Number(this.crashRoomId) : 1;
     const value = Number(this.crashInput);
     if (!Number.isFinite(value) || value < 1) {
       return this.report({ error: { message: 'Enter a crash point of 1.00 or higher.' } });
     }
     this.crashBusy = true;
-    this.post('/admin/next-crash', { roomId: this.crashRoomId, crashPoint: value }).subscribe({
+    this.post('/admin/next-crash', { roomId: targetRoomId, crashPoint: value }).subscribe({
       next: (result: any) => {
         this.crashBusy = false;
         this.crashOverrideRooms = result?.rooms || this.crashOverrideRooms;
         this.crashInput = null;
-        this.success(result?.message || 'Next crash point set.');
+        this.success(result?.message || `Next crash point set for Room ${targetRoomId}.`);
         this.cdr.detectChanges();
       },
       error: error => { this.crashBusy = false; this.report(error); },
@@ -1868,12 +1948,13 @@ export class SourceAdminComponent implements OnInit, OnDestroy {
   }
 
   clearNextCrash(): void {
+    const targetRoomId = [1, 2, 3].includes(Number(this.crashRoomId)) ? Number(this.crashRoomId) : 1;
     this.crashBusy = true;
-    this.delete(`/admin/next-crash/${this.crashRoomId}`).subscribe({
+    this.delete(`/admin/next-crash/${targetRoomId}`).subscribe({
       next: (result: any) => {
         this.crashBusy = false;
         this.crashOverrideRooms = result?.rooms || this.crashOverrideRooms;
-        this.success(result?.message || 'Back to the default crash point.');
+        this.success(result?.message || `Room ${targetRoomId} is back to the default crash point.`);
         this.cdr.detectChanges();
       },
       error: error => { this.crashBusy = false; this.report(error); },
@@ -1967,6 +2048,58 @@ export class SourceAdminComponent implements OnInit, OnDestroy {
         this.loadUsers();
         this.cdr.detectChanges();
       }));
+      this.refreshSubscription.add(this.adminSocket.nextCrashOverride$.subscribe((payload) => {
+        if (!payload?.rooms) return;
+        this.crashOverrideRooms = payload.rooms;
+        if (this.tab === 'live') {
+          this.predatorRequestInFlight = false;
+          this.loadPredatorData();
+        }
+        this.cdr.detectChanges();
+      }));
+      this.refreshSubscription.add(this.gameSocket.roomStates$.subscribe((roomsData) => {
+        if (!roomsData) return;
+        for (const rId of [1, 2, 3]) {
+          const r = roomsData[rId];
+          if (r) {
+            this.roomLiveStates[rId] = {
+              phase: r.phase || 'betting',
+              multiplier: Number(r.multiplier) || 1,
+              roundId: r.roundId || null,
+            };
+          }
+        }
+        this.cdr.detectChanges();
+      }));
+      this.refreshSubscription.add(this.gameSocket.roomPhase$.subscribe((data) => {
+        if (!data || !this.roomLiveStates[data.roomId]) return;
+        this.roomLiveStates[data.roomId] = {
+          phase: data.phase,
+          multiplier: Number(data.multiplier) || 1,
+          roundId: data.roundId || this.roomLiveStates[data.roomId].roundId,
+        };
+        if (this.tab === 'live' && data.roomId === this.crashRoomId) {
+          this.predatorRequestInFlight = false;
+          this.loadPredatorData();
+        }
+        this.cdr.detectChanges();
+      }));
+      this.refreshSubscription.add(this.gameSocket.roomTick$.subscribe((data) => {
+        if (!data || !this.roomLiveStates[data.roomId]) return;
+        this.roomLiveStates[data.roomId].multiplier = Number(data.multiplier) || 1;
+        this.roomLiveStates[data.roomId].phase = 'flying';
+        if (this.tab === 'live' && data.roomId === this.crashRoomId) this.cdr.detectChanges();
+      }));
+      this.refreshSubscription.add(this.gameSocket.roomCrashed$.subscribe((data) => {
+        if (!data || !this.roomLiveStates[data.roomId]) return;
+        this.roomLiveStates[data.roomId].phase = 'crashed';
+        this.roomLiveStates[data.roomId].multiplier = Number(data.crashPoint) || 1;
+        if (this.tab === 'live' && data.roomId === this.crashRoomId) {
+          this.roundHistoryRequestInFlight = false;
+          this.loadRoundHistory();
+          this.cdr.detectChanges();
+        }
+      }));
     }
 
     const timer = setInterval(() => {
@@ -2031,8 +2164,15 @@ export class SourceAdminComponent implements OnInit, OnDestroy {
   private loadPredatorData(): void {
     if (this.predatorRequestInFlight) return;
     this.predatorRequestInFlight = true;
-    this.get<any>('/predator').subscribe({
-      next: data => { this.predatorData = data; this.predatorRequestInFlight = false; this.markLiveMonitorUpdated(); },
+    const requestedRoom = [1, 2, 3].includes(Number(this.crashRoomId)) ? Number(this.crashRoomId) : 1;
+    this.get<any>(`/predator?roomId=${requestedRoom}`).subscribe({
+      next: data => {
+        this.predatorRequestInFlight = false;
+        if (requestedRoom === Number(this.crashRoomId)) {
+          this.predatorData = data;
+          this.markLiveMonitorUpdated();
+        }
+      },
       error: () => this.predatorRequestInFlight = false,
       complete: () => this.predatorRequestInFlight = false,
     });
@@ -2064,8 +2204,15 @@ export class SourceAdminComponent implements OnInit, OnDestroy {
   private loadRoundHistory(): void {
     if (this.roundHistoryRequestInFlight) return;
     this.roundHistoryRequestInFlight = true;
-    this.get<RoundHistory>('/admin/round-history').subscribe({
-      next: data => { this.roundHistory = data.history || []; this.markLiveMonitorUpdated(); },
+    const requestedRoom = [1, 2, 3].includes(Number(this.crashRoomId)) ? Number(this.crashRoomId) : 1;
+    this.get<RoundHistory>(`/admin/round-history?roomId=${requestedRoom}`).subscribe({
+      next: data => {
+        this.roundHistoryRequestInFlight = false;
+        if (requestedRoom === Number(this.crashRoomId)) {
+          this.roundHistory = data.history || [];
+          this.markLiveMonitorUpdated();
+        }
+      },
       error: () => this.roundHistoryRequestInFlight = false,
       complete: () => this.roundHistoryRequestInFlight = false,
     });
@@ -2079,7 +2226,7 @@ export class SourceAdminComponent implements OnInit, OnDestroy {
     this.post(`/admin/transactions/${tx.id}/recheck`, {}).subscribe({
       next: (result: any) => {
         this.recheckingId = null;
-        this.success(result?.message || 'Rechecked with ArchPay.');
+        this.success(result?.message || 'Rechecked with PayHero.');
         this.loadTransactions();
         this.loadFinancial();
       },

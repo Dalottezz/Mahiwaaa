@@ -2,7 +2,6 @@ import { Injectable, inject } from '@angular/core';
 import { HttpClient, HttpHeaders } from '@angular/common/http';
 import { BehaviorSubject, Observable, tap, catchError, of, throwError, switchMap, map, timeout } from 'rxjs';
 import { API_BASE_URL } from '../config/api-url';
-import { MAX_DEPOSIT_AMOUNT } from '../config/deposit-limits';
 import { WithdrawalNoticeService } from './withdrawal-notice.service';
 
 export interface User {
@@ -230,21 +229,45 @@ export class AuthService {
       { headers }
     ).pipe(
       timeout(15000),
-      catchError(err => throwError(() => this.extractErrorMessage(err)))
+      catchError(err => {
+        const message = this.extractErrorMessage(err);
+        const errorObj = {
+          message,
+          code: err?.error?.code,
+          retryAfterSeconds: err?.error?.retryAfterSeconds,
+          cooldownUntil: err?.error?.cooldownUntil,
+          status: err?.status,
+          toString() { return message; }
+        };
+        return throwError(() => errorObj);
+      })
     );
   }
 
-  public getPaymentConfig(): Observable<{ minDepositAmount: number; maxDepositAmount: number }> {
-    return this.http.get<{ minDepositAmount: number; maxDepositAmount: number }>(`${this.baseUrl}/payments/config`).pipe(
+  public getDepositCooldown(): Observable<{ inCooldown: boolean; retryAfterSeconds: number; cooldownUntil: number | null }> {
+    const headers = this.getAuthHeaders();
+    return this.http.get<{ inCooldown: boolean; retryAfterSeconds?: number; cooldownUntil?: number | null }>(
+      `${this.baseUrl}/payments/cooldown`,
+      { headers }
+    ).pipe(
+      map(res => ({
+        inCooldown: !!res?.inCooldown,
+        retryAfterSeconds: Number(res?.retryAfterSeconds) || 0,
+        cooldownUntil: res?.cooldownUntil || null,
+      })),
+      catchError(() => of({ inCooldown: false, retryAfterSeconds: 0, cooldownUntil: null }))
+    );
+  }
+
+  public getPaymentConfig(): Observable<{ minDepositAmount: number }> {
+    return this.http.get<{ minDepositAmount: number }>(`${this.baseUrl}/payments/config`).pipe(
       map(config => {
         const minDepositAmount = Number(config?.minDepositAmount);
-        const maxDepositAmount = Number(config?.maxDepositAmount);
         return {
           minDepositAmount: Number.isFinite(minDepositAmount) && minDepositAmount >= 1 ? minDepositAmount : 999,
-          maxDepositAmount: Number.isFinite(maxDepositAmount) && maxDepositAmount >= 1 ? maxDepositAmount : MAX_DEPOSIT_AMOUNT,
         };
       }),
-      catchError(() => of({ minDepositAmount: 999, maxDepositAmount: MAX_DEPOSIT_AMOUNT }))
+      catchError(() => of({ minDepositAmount: 999 }))
     );
   }
 
